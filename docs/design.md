@@ -2,14 +2,14 @@
 
 ## Goal
 
-pion-node is a Node.js SDK that wraps the [pion-ipc](https://github.com/nicosmd/pion-ipc) Go process, providing a high-level, W3C-flavored API for WebRTC PeerConnections and DataChannels. It aims to be a drop-in replacement for native WebRTC libraries in Node.js with minimal API friction.
+pion-node is a Node.js SDK that wraps the [pion-ipc](https://github.com/nicosmd/pion-ipc) Go process, providing a W3C WebRTC-compatible API for PeerConnections and DataChannels. It aims to be API-compatible with the node-datachannel polyfill, enabling drop-in replacement in Node.js applications.
 
 ## Architecture Overview
 
 ```
 Application Code
     |
-    |  PeerConnection / DataChannel (async API)
+    |  RTCPeerConnection / RTCDataChannel (W3C-compatible API)
     |
 pion-node SDK
     |  PionIpc (process + IPC management)
@@ -24,10 +24,85 @@ pion-ipc (Go binary)
 The SDK has three layers:
 
 1. **PionIpc**: Spawns the Go process, manages the IPC read/write streams, correlates request/response pairs by ID, and re-emits events via Node.js EventEmitter.
-2. **PeerConnection**: W3C-style wrapper that translates high-level method calls into IPC requests and filters events by `pcId`.
-3. **DataChannel**: W3C-style wrapper that translates send/close/bufferedAmount operations into IPC requests and filters events by `pcId` + `dcLabel`.
+2. **RTCPeerConnection**: W3C-compatible wrapper that translates high-level method calls into IPC requests and filters events by `pcId`. Supports `on*` property setters and standard state getters.
+3. **RTCDataChannel**: W3C-compatible wrapper with synchronous `send()`, `bufferedAmount` property, `readyState` state machine, and `on*` property setters.
 
 ## Key Design Decisions
+
+### Single-Step Construction with Deferred Init
+
+W3C's `new RTCPeerConnection(config)` is a single synchronous call. pion-node follows this pattern:
+
+```javascript
+const pc = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.example.com' }],
+    _ipc: ipcInstance,      // pion-node extension
+    _pcId: 'conn-1',        // pion-node extension (optional, defaults to UUID)
+});
+```
+
+The constructor synchronously returns and starts an internal `_ready` Promise that sends the `pc.create` IPC request. All async methods (createOffer, setRemoteDescription, etc.) internally `await this._ready` before proceeding.
+
+The `_ipc` and `_pcId` fields use underscore prefix to signal they are pion-node extensions, not part of the W3C spec.
+
+### Synchronous createDataChannel
+
+W3C's `createDataChannel()` returns synchronously. pion-node matches this:
+
+```javascript
+const dc = pc.createDataChannel('rpc', { ordered: true });
+// dc is immediately usable (RTCDataChannel instance)
+// Internal IPC dc.create request runs asynchronously
+```
+
+The DataChannel's `_init()` IPC call is chained after the PeerConnection's `_ready` promise. Errors during init are emitted as `'error'` events on the DataChannel.
+
+### Synchronous send() with Internal Queue
+
+W3C's `RTCDataChannel.send()` is synchronous. pion-node implements this with an internal send queue:
+
+1. `send(data)` synchronously validates state, computes payload size, updates `bufferedAmount`, and enqueues the message.
+2. An internal `_drainQueue()` method asynchronously processes the queue, sending each message via IPC.
+3. After each successful IPC send, `bufferedAmount` is decremented.
+4. When the queue is drained and `bufferedAmount <= bufferedAmountLowThreshold`, a `bufferedamountlow` event is emitted.
+
+This provides W3C-compatible synchronous `send()` semantics while maintaining IPC backpressure through the queue.
+
+### bufferedAmount as Synchronous Property
+
+Unlike the previous async `getBufferedAmount()` method, `bufferedAmount` is now a synchronous property that tracks the local send queue size. This is sufficient for flow control because:
+
+- The value reflects bytes queued but not yet acknowledged by the Go process.
+- Combined with `bufferedAmountLowThreshold` and `bufferedamountlow` events, callers can implement proper flow control without polling.
+
+### on* Property Setters
+
+Both RTCPeerConnection and RTCDataChannel support W3C-style `on*` property setters:
+
+```javascript
+pc.onicecandidate = (event) => { ... };
+dc.onmessage = (event) => { ... };
+```
+
+These are implemented via `Object.defineProperty` on top of EventEmitter, automatically managing listener registration/deregistration when the property is set, replaced, or cleared.
+
+### Event Format Alignment
+
+Events follow W3C conventions:
+
+- **icecandidate**: `{ candidate: { candidate, sdpMid, sdpMLineIndex } | null }` — candidate wrapped in an object.
+- **connectionstatechange / iceconnectionstatechange**: No arguments passed to the callback. State is read via `pc.connectionState` / `pc.iceConnectionState` getters.
+- **datachannel**: `{ channel: RTCDataChannel }` — no extra fields.
+- **message**: `{ data: string | Buffer }` — type determined by `typeof event.data`.
+
+### readyState State Machine
+
+RTCDataChannel tracks `readyState` locally:
+
+- Starts as `'connecting'`
+- Transitions to `'open'` on `dc.open` IPC event
+- Transitions to `'closed'` on `dc.close` IPC event or explicit `close()` call
+- `send()` throws `InvalidStateError` if not `'open'`
 
 ### Why Not Expose the IPC Layer Directly
 
@@ -35,34 +110,18 @@ The raw IPC protocol requires callers to manage request IDs, encode/decode msgpa
 
 - Automatic request ID management and timeout handling.
 - Object-oriented PeerConnection/DataChannel instances with event filtering.
-- Proper async/await interfaces instead of raw frame callbacks.
+- W3C-compatible interfaces with synchronous send and property-based state access.
 - Transparent msgpack encoding/decoding for payloads.
-
-This reduces the typical usage from ~50 lines of IPC frame management to a few lines of familiar WebRTC-like code.
 
 ### Event Filtering by pcId and dcLabel
 
 The Go process emits all events on a single stdout stream. The SDK routes them using a two-level filtering scheme:
 
 - PionIpc re-emits every event by its event name (e.g., `pc.statechange`, `dc.message`).
-- PeerConnection subscribes to PC-level events and filters by `pcId`, ignoring events from other PeerConnections.
-- DataChannel subscribes to DC-level events and filters by both `pcId` and `dcLabel`.
+- RTCPeerConnection subscribes to PC-level events and filters by `pcId`, ignoring events from other PeerConnections.
+- RTCDataChannel subscribes to DC-level events and filters by both `pcId` and `dcLabel`.
 
 When a PeerConnection or DataChannel is closed, its event listeners are detached from the PionIpc emitter to prevent leaks.
-
-### send() is Async
-
-In the W3C API, `RTCDataChannel.send()` is synchronous and throws if the buffer is full. In pion-node, `send()` is async — it writes a request frame, waits for the Go process to acknowledge the send, and resolves.
-
-This design provides natural backpressure: if the Go-side send buffer is full or the write is slow, the promise takes longer to resolve, and the caller naturally slows down. There is no need for try/catch retry loops around synchronous sends.
-
-The tradeoff is an IPC round-trip per send. For high-throughput scenarios, callers can batch or pipeline sends.
-
-### getBufferedAmount() is Async
-
-Unlike the W3C API where `bufferedAmount` is a synchronous property, `getBufferedAmount()` is an async method that performs an IPC round trip. This is because the buffered amount lives in the Go process memory.
-
-For flow control, the preferred approach is to use `setBufferedAmountLowThreshold()` and listen for `bufferedamountlow` events, which avoids polling.
 
 ### Process Lifecycle Management
 
@@ -81,20 +140,32 @@ The Go binary is resolved at runtime in priority order:
 
 This keeps the npm package lightweight (no bundled binaries) and allows users to manage the Go binary through their preferred method (system package manager, Docker image, CI artifact, etc.).
 
-## Differences from the W3C WebRTC API
+## API Compatibility with W3C / node-datachannel
+
+| W3C API | pion-node | Notes |
+|---------|-----------|-------|
+| `new RTCPeerConnection(config)` | `new RTCPeerConnection({ iceServers, _ipc, _pcId })` | `_ipc` and `_pcId` are pion-node extensions |
+| `pc.createOffer()` | `await pc.createOffer()` | Returns `{ type, sdp }` |
+| `pc.createDataChannel(label, opts)` sync | `pc.createDataChannel(label, opts)` sync | Returns RTCDataChannel immediately |
+| `pc.connectionState` | `pc.connectionState` | Synchronous getter |
+| `pc.iceConnectionState` | `pc.iceConnectionState` | Synchronous getter |
+| `pc.onicecandidate = fn` | `pc.onicecandidate = fn` | Supported |
+| `dc.send(data)` sync | `dc.send(data)` sync | Queues internally, drains via IPC |
+| `dc.bufferedAmount` | `dc.bufferedAmount` | Synchronous getter (local queue tracking) |
+| `dc.bufferedAmountLowThreshold` | `dc.bufferedAmountLowThreshold` | Getter/setter, async IPC notify on set |
+| `dc.readyState` | `dc.readyState` | `'connecting'` / `'open'` / `'closed'` |
+| `dc.ordered` | `dc.ordered` | Synchronous getter |
+| `dc.onmessage = fn` | `dc.onmessage = fn` | Supported |
+| Events via `addEventListener` | Events via EventEmitter (`on`/`off`) | Node.js idiomatic |
+
+### Remaining Differences
 
 | W3C API | pion-node | Reason |
 |---------|-----------|--------|
-| `new RTCPeerConnection(config)` | `new PeerConnection(ipc, id, iceServers)` + `await pc.init()` | Explicit initialization — the Go-side PeerConnection is created asynchronously via IPC |
-| `pc.createOffer()` returns `RTCSessionDescription` | Returns `{ type, sdp }` | Same structure, no wrapper class |
-| `pc.setLocalDescription(desc)` | `await pc.setLocalDescription(desc)` | Async due to IPC round trip |
-| `pc.restartIce()` marks ICE restart (void) | `await pc.restartIce()` returns `{ type: 'offer', sdp }` | Combines restart + createOffer + setLocalDescription in one call |
-| `dc.send(data)` is synchronous, throws on full buffer | `await dc.send(data)` is async | IPC round trip provides natural backpressure |
-| `dc.bufferedAmount` is a property | `await dc.getBufferedAmount()` is a method | Value lives in the Go process |
-| Events via `addEventListener` / `onX` callbacks | Events via Node.js EventEmitter (`on`, `once`, `off`) | Idiomatic for Node.js |
-| `onicecandidate` receives `RTCPeerConnectionIceEvent` | `icecandidate` event receives `{ candidate, sdpMid, sdpMLineIndex }` | Flat object instead of wrapper |
-| `ondatachannel` receives `RTCDataChannelEvent` | `datachannel` event receives `{ channel, ordered }` | `channel` is a pion-node DataChannel instance |
-| `onmessage` receives `MessageEvent` | `message` event receives `{ data, isBinary }` | `data` is a string (text) or Buffer (binary) |
+| `pc.close()` void | `await pc.close()` async | IPC round trip needed to close Go-side resources |
+| `dc.close()` void | `await dc.close()` async | Same reason |
+| `pc.restartIce()` void | `await pc.restartIce()` returns offer | Combines restart + createOffer + setLocalDescription |
+| Events via `addEventListener` | Events via Node.js EventEmitter | Idiomatic for Node.js; `on*` setters bridge the gap |
 
 ## Known Limitations
 

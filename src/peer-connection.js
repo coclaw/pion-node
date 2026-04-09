@@ -1,58 +1,110 @@
 import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import { decode } from '@msgpack/msgpack';
-import { DataChannel } from './data-channel.js';
+import { RTCDataChannel } from './data-channel.js';
 
 /**
- * W3C-style PeerConnection wrapper over pion-ipc IPC.
- * Events: 'icecandidate', 'connectionstatechange', 'datachannel'
+ * W3C-compatible RTCPeerConnection wrapper over pion-ipc IPC.
+ * Events: 'icecandidate', 'connectionstatechange', 'iceconnectionstatechange', 'datachannel'
  */
-class PeerConnection extends EventEmitter {
+class RTCPeerConnection extends EventEmitter {
 	/**
-	 * @param {import('./pion-ipc.js').PionIpc} ipc - PionIpc instance
-	 * @param {string} pcId - Unique PeerConnection identifier
-	 * @param {object[]} [iceServers] - ICE server configurations
+	 * @param {object} [config]
+	 * @param {object[]} [config.iceServers] - ICE server configurations
+	 * @param {import('./pion-ipc.js').PionIpc} [config._ipc] - PionIpc instance (pion-node extension)
+	 * @param {string} [config._pcId] - PeerConnection ID (pion-node extension, defaults to UUID)
 	 */
-	constructor(ipc, pcId, iceServers = []) {
+	constructor(config = {}) {
 		super();
-		this._ipc = ipc;
-		this._pcId = pcId;
-		this._iceServers = iceServers;
+		this._ipc = config._ipc;
+		this._pcId = config._pcId || randomUUID();
+		this._iceServers = config.iceServers || [];
 		this._dataChannels = new Map();
 		this._connState = 'new';
-		this._iceState = '';
+		this._iceState = 'new';
+
+		// Deferred init: starts IPC pc.create, methods await this before proceeding
+		if (this._ipc) {
+			this._ready = this._ipc.request('pc.create', {}, {
+				pcId: this._pcId,
+				iceServers: this._iceServers,
+			}).catch((err) => {
+				this._initError = err;
+				throw err;
+			});
+		} else {
+			const err = new Error('_ipc is required');
+			this._initError = err;
+			this._ready = Promise.reject(err);
+		}
+		// Prevent unhandled rejection if _ready is never awaited
+		this._ready.catch(() => {});
 
 		this._onIceCandidate = (evt) => {
-			if (evt.pcId !== pcId) return;
+			if (evt.pcId !== this._pcId) return;
 			const candidate = decode(evt.payload);
 			this.emit('icecandidate', {
-				candidate: candidate.candidate,
-				sdpMid: candidate.sdpMid,
-				sdpMLineIndex: candidate.sdpMLineIndex,
+				candidate: {
+					candidate: candidate.candidate,
+					sdpMid: candidate.sdpMid,
+					sdpMLineIndex: candidate.sdpMLineIndex,
+				},
 			});
 		};
 
 		this._onStateChange = (evt) => {
-			if (evt.pcId !== pcId) return;
+			if (evt.pcId !== this._pcId) return;
 			const state = decode(evt.payload);
+			const prevConn = this._connState;
+			const prevIce = this._iceState;
 			this._connState = state.connState;
 			this._iceState = state.iceState;
-			this.emit('connectionstatechange', {
-				connectionState: state.connState,
-				iceConnectionState: state.iceState,
-			});
+			if (state.connState !== prevConn) {
+				this.emit('connectionstatechange');
+			}
+			if (state.iceState !== prevIce) {
+				this.emit('iceconnectionstatechange');
+			}
 		};
 
 		this._onDataChannel = (evt) => {
-			if (evt.pcId !== pcId) return;
+			if (evt.pcId !== this._pcId) return;
 			const info = decode(evt.payload);
-			const dc = new DataChannel(ipc, pcId, evt.dcLabel);
+			const dc = new RTCDataChannel({
+				_ipc: this._ipc,
+				_pcId: this._pcId,
+				_label: evt.dcLabel,
+				_ordered: info.ordered !== false,
+				_remote: true,
+			});
 			this._dataChannels.set(evt.dcLabel, dc);
-			this.emit('datachannel', { channel: dc, ordered: info.ordered });
+			this.emit('datachannel', { channel: dc });
 		};
 
-		ipc.on('pc.icecandidate', this._onIceCandidate);
-		ipc.on('pc.statechange', this._onStateChange);
-		ipc.on('pc.datachannel', this._onDataChannel);
+		if (this._ipc) {
+			this._ipc.on('pc.icecandidate', this._onIceCandidate);
+			this._ipc.on('pc.statechange', this._onStateChange);
+			this._ipc.on('pc.datachannel', this._onDataChannel);
+		}
+
+		// on* property handlers
+		this._defineOnProperty('onicecandidate');
+		this._defineOnProperty('onconnectionstatechange');
+		this._defineOnProperty('oniceconnectionstatechange');
+		this._defineOnProperty('ondatachannel');
+	}
+
+	_defineOnProperty(name) {
+		let handler = null;
+		Object.defineProperty(this, name, {
+			get: () => handler,
+			set: (fn) => {
+				if (handler) this.off(name.slice(2), handler);
+				handler = fn;
+				if (fn) this.on(name.slice(2), fn);
+			},
+			configurable: true,
+		});
 	}
 
 	get connectionState() {
@@ -64,20 +116,11 @@ class PeerConnection extends EventEmitter {
 	}
 
 	/**
-	 * Initialize the peer connection on the Go side.
-	 */
-	async init() {
-		await this._ipc.request('pc.create', {}, {
-			pcId: this._pcId,
-			iceServers: this._iceServers,
-		});
-	}
-
-	/**
 	 * Create an SDP offer.
 	 * @returns {Promise<{ type: string, sdp: string }>}
 	 */
 	async createOffer() {
+		await this._ready;
 		const { payload } = await this._ipc.request('pc.createOffer', { pcId: this._pcId });
 		const result = decode(payload);
 		return { type: 'offer', sdp: result.sdp };
@@ -88,6 +131,7 @@ class PeerConnection extends EventEmitter {
 	 * @returns {Promise<{ type: string, sdp: string }>}
 	 */
 	async createAnswer() {
+		await this._ready;
 		const { payload } = await this._ipc.request('pc.createAnswer', { pcId: this._pcId });
 		const result = decode(payload);
 		return { type: 'answer', sdp: result.sdp };
@@ -98,6 +142,7 @@ class PeerConnection extends EventEmitter {
 	 * @param {{ type: string, sdp: string }} desc
 	 */
 	async setRemoteDescription(desc) {
+		await this._ready;
 		await this._ipc.request('pc.setRemoteDescription', { pcId: this._pcId }, {
 			type: desc.type,
 			sdp: desc.sdp,
@@ -109,6 +154,7 @@ class PeerConnection extends EventEmitter {
 	 * @param {{ type: string, sdp: string }} desc
 	 */
 	async setLocalDescription(desc) {
+		await this._ready;
 		await this._ipc.request('pc.setLocalDescription', { pcId: this._pcId }, {
 			type: desc.type,
 			sdp: desc.sdp,
@@ -120,6 +166,7 @@ class PeerConnection extends EventEmitter {
 	 * @param {{ candidate: string, sdpMid: string, sdpMLineIndex: number }} candidate
 	 */
 	async addIceCandidate(candidate) {
+		await this._ready;
 		await this._ipc.request('pc.addIceCandidate', { pcId: this._pcId }, {
 			candidate: candidate.candidate,
 			sdpMid: candidate.sdpMid,
@@ -132,26 +179,36 @@ class PeerConnection extends EventEmitter {
 	 * @returns {Promise<{ type: string, sdp: string }>}
 	 */
 	async restartIce() {
+		await this._ready;
 		const { payload } = await this._ipc.request('pc.restartIce', { pcId: this._pcId });
 		const result = decode(payload);
 		return { type: 'offer', sdp: result.sdp };
 	}
 
 	/**
-	 * Create a new DataChannel.
+	 * Create a new DataChannel (synchronous, W3C-compatible).
 	 * @param {string} label
 	 * @param {object} [opts]
 	 * @param {boolean} [opts.ordered=true]
-	 * @returns {Promise<DataChannel>}
+	 * @returns {RTCDataChannel}
 	 */
-	async createDataChannel(label, opts = {}) {
-		const ordered = opts.ordered !== false;
-		await this._ipc.request('dc.create', { pcId: this._pcId }, {
-			label,
-			ordered,
+	createDataChannel(label, opts = {}) {
+		const dc = new RTCDataChannel({
+			_ipc: this._ipc,
+			_pcId: this._pcId,
+			_label: label,
+			_ordered: opts.ordered !== false,
+			_remote: false,
 		});
-		const dc = new DataChannel(this._ipc, this._pcId, label);
 		this._dataChannels.set(label, dc);
+		// Async init: send dc.create IPC after pc is ready
+		this._ready
+			.then(() => dc._init())
+			.catch((err) => {
+				dc._readyState = 'closed';
+				dc.emit('error', err);
+				dc.emit('close');
+			});
 		return dc;
 	}
 
@@ -164,14 +221,21 @@ class PeerConnection extends EventEmitter {
 			dc._detach();
 		}
 		this._dataChannels.clear();
+		this._connState = 'closed';
+		if (!this._ipc) return;
+		await this._ready.catch(() => {});
+		if (this._initError) return; // pc.create failed, nothing to close on Go side
 		await this._ipc.request('pc.close', { pcId: this._pcId });
 	}
 
 	_detach() {
+		if (!this._ipc) return;
 		this._ipc.off('pc.icecandidate', this._onIceCandidate);
 		this._ipc.off('pc.statechange', this._onStateChange);
 		this._ipc.off('pc.datachannel', this._onDataChannel);
 	}
 }
 
-export { PeerConnection };
+export { RTCPeerConnection };
+// Backward-compatible alias
+export { RTCPeerConnection as PeerConnection };
