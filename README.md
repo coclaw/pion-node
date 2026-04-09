@@ -76,7 +76,7 @@ Max frame size: 16 MiB.
 - `restartIce()` -- ICE restart
 - `createDataChannel(label, opts?)` -- create DataChannel
 - `close()`
-- Events: `'icecandidate'`, `'connectionstatechange'`, `'datachannel'`
+- Events: `'icecandidate'`, `'connectionstatechange'`, `'iceconnectionstatechange'`, `'selectedcandidatepairchange'`, `'icegatheringstatechange'`, `'signalingstatechange'`, `'datachannel'`
 
 ### `DataChannel`
 

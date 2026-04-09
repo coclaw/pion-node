@@ -362,6 +362,202 @@ test('close is safe when _ipc is not provided', async () => {
 	assert.equal(pc.connectionState, 'closed');
 });
 
+test('selectedcandidatepairchange event updates getter and emits', () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+
+	assert.equal(pc.selectedCandidatePair, null);
+
+	const events = [];
+	pc.on('selectedcandidatepairchange', () => events.push(pc.selectedCandidatePair));
+
+	const pair = {
+		local: { type: 'host', address: '192.168.1.1', port: 12345, protocol: 'udp' },
+		remote: { type: 'srflx', address: '203.0.113.1', port: 54321, protocol: 'udp' },
+	};
+	ipc.emit('pc.selectedcandidatepairchange', {
+		pcId: 'pc-1',
+		payload: Buffer.from(encode(pair)),
+	});
+
+	assert.equal(events.length, 1);
+	assert.deepEqual(pc.selectedCandidatePair, pair);
+	assert.deepEqual(events[0], pair);
+});
+
+test('selectedcandidatepairchange filters by pcId', () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+
+	const events = [];
+	pc.on('selectedcandidatepairchange', () => events.push(true));
+
+	ipc.emit('pc.selectedcandidatepairchange', {
+		pcId: 'pc-other',
+		payload: Buffer.from(encode({
+			local: { type: 'host', address: '1.2.3.4', port: 1, protocol: 'udp' },
+			remote: { type: 'host', address: '5.6.7.8', port: 2, protocol: 'udp' },
+		})),
+	});
+
+	assert.equal(events.length, 0);
+	assert.equal(pc.selectedCandidatePair, null);
+});
+
+test('icegatheringstatechange event updates getter and emits', () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+
+	assert.equal(pc.iceGatheringState, 'new');
+
+	const events = [];
+	pc.on('icegatheringstatechange', () => events.push(pc.iceGatheringState));
+
+	ipc.emit('pc.icegatheringstatechange', {
+		pcId: 'pc-1',
+		payload: Buffer.from(encode({ state: 'gathering' })),
+	});
+
+	assert.equal(events.length, 1);
+	assert.equal(pc.iceGatheringState, 'gathering');
+
+	ipc.emit('pc.icegatheringstatechange', {
+		pcId: 'pc-1',
+		payload: Buffer.from(encode({ state: 'complete' })),
+	});
+
+	assert.equal(events.length, 2);
+	assert.equal(pc.iceGatheringState, 'complete');
+});
+
+test('icegatheringstatechange filters by pcId', () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+
+	const events = [];
+	pc.on('icegatheringstatechange', () => events.push(true));
+
+	ipc.emit('pc.icegatheringstatechange', {
+		pcId: 'pc-other',
+		payload: Buffer.from(encode({ state: 'gathering' })),
+	});
+
+	assert.equal(events.length, 0);
+	assert.equal(pc.iceGatheringState, 'new');
+});
+
+test('signalingstatechange event updates getter and emits', () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+
+	assert.equal(pc.signalingState, 'stable');
+
+	const events = [];
+	pc.on('signalingstatechange', () => events.push(pc.signalingState));
+
+	ipc.emit('pc.signalingstatechange', {
+		pcId: 'pc-1',
+		payload: Buffer.from(encode({ state: 'have-local-offer' })),
+	});
+
+	assert.equal(events.length, 1);
+	assert.equal(pc.signalingState, 'have-local-offer');
+
+	ipc.emit('pc.signalingstatechange', {
+		pcId: 'pc-1',
+		payload: Buffer.from(encode({ state: 'stable' })),
+	});
+
+	assert.equal(events.length, 2);
+	assert.equal(pc.signalingState, 'stable');
+});
+
+test('signalingstatechange filters by pcId', () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+
+	const events = [];
+	pc.on('signalingstatechange', () => events.push(true));
+
+	ipc.emit('pc.signalingstatechange', {
+		pcId: 'pc-other',
+		payload: Buffer.from(encode({ state: 'have-local-offer' })),
+	});
+
+	assert.equal(events.length, 0);
+	assert.equal(pc.signalingState, 'stable');
+});
+
+test('on* property setters work for new events', () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+
+	// Initially null
+	assert.equal(pc.onselectedcandidatepairchange, null);
+	assert.equal(pc.onicegatheringstatechange, null);
+	assert.equal(pc.onsignalingstatechange, null);
+
+	// Set and verify selectedcandidatepairchange
+	const calls = [];
+	pc.onselectedcandidatepairchange = () => calls.push('pair');
+	ipc.emit('pc.selectedcandidatepairchange', {
+		pcId: 'pc-1',
+		payload: Buffer.from(encode({
+			local: { type: 'host', address: '1.2.3.4', port: 1, protocol: 'udp' },
+			remote: { type: 'host', address: '5.6.7.8', port: 2, protocol: 'udp' },
+		})),
+	});
+	assert.equal(calls.length, 1);
+
+	// Set and verify icegatheringstatechange
+	pc.onicegatheringstatechange = () => calls.push('gather');
+	ipc.emit('pc.icegatheringstatechange', {
+		pcId: 'pc-1',
+		payload: Buffer.from(encode({ state: 'gathering' })),
+	});
+	assert.equal(calls.length, 2);
+	assert.equal(calls[1], 'gather');
+
+	// Set and verify signalingstatechange
+	pc.onsignalingstatechange = () => calls.push('signal');
+	ipc.emit('pc.signalingstatechange', {
+		pcId: 'pc-1',
+		payload: Buffer.from(encode({ state: 'have-local-offer' })),
+	});
+	assert.equal(calls.length, 3);
+	assert.equal(calls[2], 'signal');
+
+	// Clear all
+	pc.onselectedcandidatepairchange = null;
+	pc.onicegatheringstatechange = null;
+	pc.onsignalingstatechange = null;
+
+	ipc.emit('pc.selectedcandidatepairchange', {
+		pcId: 'pc-1',
+		payload: Buffer.from(encode({
+			local: { type: 'host', address: '1.2.3.4', port: 1, protocol: 'udp' },
+			remote: { type: 'host', address: '5.6.7.8', port: 2, protocol: 'udp' },
+		})),
+	});
+	assert.equal(calls.length, 3); // no new calls
+});
+
+test('close detaches new event listeners', async () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+	await pc._ready;
+
+	const pairBefore = ipc.listenerCount('pc.selectedcandidatepairchange');
+	const gatherBefore = ipc.listenerCount('pc.icegatheringstatechange');
+	const sigBefore = ipc.listenerCount('pc.signalingstatechange');
+
+	await pc.close();
+
+	assert.equal(ipc.listenerCount('pc.selectedcandidatepairchange'), pairBefore - 1);
+	assert.equal(ipc.listenerCount('pc.icegatheringstatechange'), gatherBefore - 1);
+	assert.equal(ipc.listenerCount('pc.signalingstatechange'), sigBefore - 1);
+});
+
 test('close is safe when pc.create failed', async () => {
 	const ipc = createMockIpc();
 	ipc.request = async (method) => {

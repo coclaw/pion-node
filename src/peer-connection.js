@@ -5,7 +5,8 @@ import { RTCDataChannel } from './data-channel.js';
 
 /**
  * W3C-compatible RTCPeerConnection wrapper over pion-ipc IPC.
- * Events: 'icecandidate', 'connectionstatechange', 'iceconnectionstatechange', 'datachannel'
+ * Events: 'icecandidate', 'connectionstatechange', 'iceconnectionstatechange',
+ *         'selectedcandidatepairchange', 'icegatheringstatechange', 'signalingstatechange', 'datachannel'
  */
 class RTCPeerConnection extends EventEmitter {
 	/**
@@ -22,6 +23,9 @@ class RTCPeerConnection extends EventEmitter {
 		this._dataChannels = new Map();
 		this._connState = 'new';
 		this._iceState = 'new';
+		this._selectedCandidatePair = null;
+		this._iceGatheringState = 'new';
+		this._signalingState = 'stable';
 
 		// Deferred init: starts IPC pc.create, methods await this before proceeding
 		if (this._ipc) {
@@ -81,10 +85,34 @@ class RTCPeerConnection extends EventEmitter {
 			this.emit('datachannel', { channel: dc });
 		};
 
+		this._onSelectedCandidatePairChange = (evt) => {
+			if (evt.pcId !== this._pcId) return;
+			const pair = decode(evt.payload);
+			this._selectedCandidatePair = { local: pair.local, remote: pair.remote };
+			this.emit('selectedcandidatepairchange');
+		};
+
+		this._onIceGatheringStateChange = (evt) => {
+			if (evt.pcId !== this._pcId) return;
+			const data = decode(evt.payload);
+			this._iceGatheringState = data.state;
+			this.emit('icegatheringstatechange');
+		};
+
+		this._onSignalingStateChange = (evt) => {
+			if (evt.pcId !== this._pcId) return;
+			const data = decode(evt.payload);
+			this._signalingState = data.state;
+			this.emit('signalingstatechange');
+		};
+
 		if (this._ipc) {
 			this._ipc.on('pc.icecandidate', this._onIceCandidate);
 			this._ipc.on('pc.statechange', this._onStateChange);
 			this._ipc.on('pc.datachannel', this._onDataChannel);
+			this._ipc.on('pc.selectedcandidatepairchange', this._onSelectedCandidatePairChange);
+			this._ipc.on('pc.icegatheringstatechange', this._onIceGatheringStateChange);
+			this._ipc.on('pc.signalingstatechange', this._onSignalingStateChange);
 		}
 
 		// on* property handlers
@@ -92,6 +120,9 @@ class RTCPeerConnection extends EventEmitter {
 		this._defineOnProperty('onconnectionstatechange');
 		this._defineOnProperty('oniceconnectionstatechange');
 		this._defineOnProperty('ondatachannel');
+		this._defineOnProperty('onselectedcandidatepairchange');
+		this._defineOnProperty('onicegatheringstatechange');
+		this._defineOnProperty('onsignalingstatechange');
 	}
 
 	_defineOnProperty(name) {
@@ -113,6 +144,18 @@ class RTCPeerConnection extends EventEmitter {
 
 	get iceConnectionState() {
 		return this._iceState;
+	}
+
+	get selectedCandidatePair() {
+		return this._selectedCandidatePair;
+	}
+
+	get iceGatheringState() {
+		return this._iceGatheringState;
+	}
+
+	get signalingState() {
+		return this._signalingState;
 	}
 
 	/**
@@ -233,6 +276,9 @@ class RTCPeerConnection extends EventEmitter {
 		this._ipc.off('pc.icecandidate', this._onIceCandidate);
 		this._ipc.off('pc.statechange', this._onStateChange);
 		this._ipc.off('pc.datachannel', this._onDataChannel);
+		this._ipc.off('pc.selectedcandidatepairchange', this._onSelectedCandidatePairChange);
+		this._ipc.off('pc.icegatheringstatechange', this._onIceGatheringStateChange);
+		this._ipc.off('pc.signalingstatechange', this._onSignalingStateChange);
 	}
 }
 
