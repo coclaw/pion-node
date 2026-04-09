@@ -25,6 +25,7 @@ class RTCDataChannel extends EventEmitter {
 		this._bufferedAmountLowThreshold = 0;
 		this._sendQueue = [];
 		this._draining = false;
+		this._closed = false;
 
 		this._onDcOpen = (evt) => {
 			if (evt.pcId === this._pcId && evt.dcLabel === this._label) {
@@ -140,6 +141,7 @@ class RTCDataChannel extends EventEmitter {
 
 		const drain = async () => {
 			while (this._sendQueue.length > 0) {
+				if (this._closed) break;
 				const { isBinary, payload } = this._sendQueue.shift();
 				try {
 					await this._ipc.request('dc.send', {
@@ -148,13 +150,14 @@ class RTCDataChannel extends EventEmitter {
 						isBinary,
 					}, payload);
 				} catch (err) {
-					this.emit('error', err);
+					if (!this._closed) this.emit('error', err);
 				}
 				const prevAmount = this._bufferedAmount;
 				this._bufferedAmount = Math.max(0, this._bufferedAmount - payload.length);
 
 				// Only emit when crossing threshold (from above to at-or-below)
-				if (prevAmount > this._bufferedAmountLowThreshold
+				if (!this._closed
+					&& prevAmount > this._bufferedAmountLowThreshold
 					&& this._bufferedAmount <= this._bufferedAmountLowThreshold) {
 					this.emit('bufferedamountlow');
 				}
@@ -162,12 +165,14 @@ class RTCDataChannel extends EventEmitter {
 			this._draining = false;
 
 			// Check for messages queued during drain
-			if (this._sendQueue.length > 0) {
+			if (this._sendQueue.length > 0 && !this._closed) {
 				this._drainQueue();
 			}
 		};
 
-		drain().catch((err) => this.emit('error', err));
+		drain().catch((err) => {
+			if (!this._closed) this.emit('error', err);
+		});
 	}
 
 	/**
@@ -185,12 +190,17 @@ class RTCDataChannel extends EventEmitter {
 	 * Close this DataChannel.
 	 */
 	async close() {
+		if (this._closed) return;
+		this._closed = true;
+		this._sendQueue.length = 0;
+		this._bufferedAmount = 0;
 		this._detach();
 		this._readyState = 'closed';
 		await this._ipc.request('dc.close', {
 			pcId: this._pcId,
 			dcLabel: this._label,
 		});
+		this.emit('close');
 	}
 
 	/**

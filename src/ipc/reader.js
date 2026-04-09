@@ -28,6 +28,11 @@ class FrameReader {
 	_drain() {
 		while (this._buffer.length >= 4) {
 			const totalLen = this._buffer.readUInt32LE(0);
+			if (totalLen < 2) {
+				this._onErrorCb?.(new Error(`frame size ${totalLen} too small (min 2)`));
+				this._buffer = Buffer.alloc(0);
+				return;
+			}
 			if (totalLen > MAX_FRAME_SIZE) {
 				this._onErrorCb?.(new Error(`frame size ${totalLen} exceeds max ${MAX_FRAME_SIZE}`));
 				this._buffer = Buffer.alloc(0);

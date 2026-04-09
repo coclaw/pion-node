@@ -198,7 +198,7 @@ test('writer throws after stream error', () => {
 	);
 });
 
-test('writer write to ended stream', () => {
+test('writer write to ended stream', async () => {
 	const stream = new PassThrough();
 	const writer = new FrameWriter(stream);
 
@@ -206,10 +206,10 @@ test('writer write to ended stream', () => {
 
 	// PassThrough 在 end 后 write 会触发 error 事件
 	// writer 自身不直接抛，但 stream 会 emit error
-	// 首先确认 writer 没有 _error（因为 end 不触发 error）
-	// write 仍然会调用 stream.write，Node 会 emit 'write after end' error
 	const errors = [];
 	stream.on('error', (err) => errors.push(err));
 	writer.write({ type: 'req', id: 1, method: 'x' });
-	assert.ok(errors.length > 0 || true); // 行为取决于 Node 版本，至少不应抛未捕获异常
+	// Node.js emits 'write after end' error
+	await new Promise((r) => setTimeout(r, 10));
+	assert.ok(errors.length > 0, 'should emit error when writing to ended stream');
 });

@@ -22,7 +22,7 @@ class PionIpc extends EventEmitter {
 		super();
 		this._binPath = opts.binPath || null;
 		this._logger = opts.logger || null;
-		this._timeout = opts.timeout || DEFAULT_TIMEOUT;
+		this._timeout = opts.timeout ?? DEFAULT_TIMEOUT;
 		this._proc = null;
 		this._reader = null;
 		this._writer = null;
@@ -151,8 +151,8 @@ class PionIpc extends EventEmitter {
 			method,
 		};
 
-		if (opts.pcId) header.pcId = opts.pcId;
-		if (opts.dcLabel) header.dcLabel = opts.dcLabel;
+		if (opts.pcId != null) header.pcId = opts.pcId;
+		if (opts.dcLabel != null) header.dcLabel = opts.dcLabel;
 		if (opts.isBinary) header.isBinary = true;
 
 		let payloadBuf = Buffer.alloc(0);
@@ -172,7 +172,13 @@ class PionIpc extends EventEmitter {
 			}, this._timeout);
 
 			this._pending.set(id, { resolve, reject, timer });
-			this._writer.write(header, payloadBuf);
+			try {
+				this._writer.write(header, payloadBuf);
+			} catch (err) {
+				this._pending.delete(id);
+				clearTimeout(timer);
+				reject(err);
+			}
 		});
 	}
 

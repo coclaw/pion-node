@@ -248,8 +248,11 @@ class RTCPeerConnection extends EventEmitter {
 		this._ready
 			.then(() => dc._init())
 			.catch((err) => {
+				dc._closed = true;
 				dc._readyState = 'closed';
-				dc.emit('error', err);
+				if (dc.listenerCount('error') > 0) {
+					dc.emit('error', err);
+				}
 				dc.emit('close');
 			});
 		return dc;
@@ -259,12 +262,20 @@ class RTCPeerConnection extends EventEmitter {
 	 * Close this PeerConnection.
 	 */
 	async close() {
-		this._detach();
 		for (const dc of this._dataChannels.values()) {
+			dc._closed = true;
+			dc._sendQueue.length = 0;
+			dc._bufferedAmount = 0;
 			dc._detach();
+			dc._readyState = 'closed';
+			dc.emit('close');
 		}
 		this._dataChannels.clear();
-		this._connState = 'closed';
+		this._detach();
+		if (this._connState !== 'closed') {
+			this._connState = 'closed';
+			this.emit('connectionstatechange');
+		}
 		if (!this._ipc) return;
 		await this._ready.catch(() => {});
 		if (this._initError) return; // pc.create failed, nothing to close on Go side
