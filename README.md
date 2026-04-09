@@ -15,23 +15,33 @@ You also need the `pion-ipc` Go binary. Either:
 ## Usage
 
 ```js
-import { PionIpc, PeerConnection } from 'pion-node';
+import { PionIpc, RTCPeerConnection } from 'pion-node';
 
 const ipc = new PionIpc();
 await ipc.start();
 
-const pc = new PeerConnection(ipc, 'my-peer', [
-  { urls: ['stun:stun.l.google.com:19302'] }
-]);
-await pc.init();
+const pc = new RTCPeerConnection({
+  _ipc: ipc,
+  iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }],
+});
 
-const dc = await pc.createDataChannel('chat');
-dc.on('open', () => {
+const dc = pc.createDataChannel('chat');
+dc.onopen = () => {
   dc.send('hello!');
-});
-dc.on('message', (msg) => {
-  console.log('received:', msg.data);
-});
+};
+dc.onmessage = (evt) => {
+  console.log('received:', evt.data);
+};
+
+pc.onicecandidate = (evt) => {
+  // send evt.candidate to remote peer via signaling
+};
+
+// Diagnostic: log selected candidate pair (host/srflx/relay)
+pc.onselectedcandidatepairchange = () => {
+  const pair = pc.selectedCandidatePair;
+  console.log(`${pair.local.type} ↔ ${pair.remote.type}`);
+};
 
 const offer = await pc.createOffer();
 // ... exchange SDP with remote peer ...
@@ -64,26 +74,31 @@ Max frame size: 16 MiB.
 - `start()` -- spawn process, verify with ping
 - `stop(timeout?)` -- graceful shutdown
 - `request(method, opts?, payload?)` -- send RPC request, returns `{ header, payload }`
-- Events: `'error'`, `'exit'`, and all Go-side events (`'pc.icecandidate'`, `'dc.message'`, etc.)
+- Events: `'error'`, `'exit'`, and all Go-side events
 
-### `PeerConnection`
+### `RTCPeerConnection`
 
-- `new PeerConnection(ipc, pcId, iceServers?)` -- create wrapper
-- `init()` -- create peer connection on Go side
+- `new RTCPeerConnection({ _ipc, iceServers?, _pcId? })` -- create (pcId defaults to UUID)
 - `createOffer()` / `createAnswer()` -- SDP negotiation
 - `setRemoteDescription(desc)` / `setLocalDescription(desc)`
 - `addIceCandidate(candidate)`
-- `restartIce()` -- ICE restart
-- `createDataChannel(label, opts?)` -- create DataChannel
+- `restartIce()` -- ICE restart, returns new offer
+- `createDataChannel(label, opts?)` -- create DataChannel (synchronous, W3C-compatible)
 - `close()`
+- Getters: `connectionState`, `iceConnectionState`, `iceGatheringState`, `signalingState`, `selectedCandidatePair`
 - Events: `'icecandidate'`, `'connectionstatechange'`, `'iceconnectionstatechange'`, `'selectedcandidatepairchange'`, `'icegatheringstatechange'`, `'signalingstatechange'`, `'datachannel'`
+- `on*` property handlers for all events
 
-### `DataChannel`
+### `RTCDataChannel`
 
-- `send(data)` -- send string or Buffer
+- `send(data)` -- send string or Buffer (synchronous, W3C-compatible)
 - `close()`
-- `getBufferedAmount()` / `setBufferedAmountLowThreshold(n)`
+- Getters: `label`, `ordered`, `readyState`, `bufferedAmount`
+- `bufferedAmountLowThreshold` getter/setter
 - Events: `'open'`, `'close'`, `'message'`, `'error'`, `'bufferedamountlow'`
+- `on*` property handlers for all events
+
+**Note on `bufferedAmount`**: The getter returns the JS-side send queue size, not the Go-side SCTP buffer. For precise flow control (e.g., file transfer), use `dc.getBA` IPC request via `PionIpc.request()` to query the Go-side value.
 
 ## License
 
