@@ -220,7 +220,7 @@ test('null payload sends empty buffer', async () => {
 
 test('logger receives formatted messages', async () => {
 	const logs = [];
-	const { ipc, proc } = createStartedIpc({ logger: (msg) => logs.push(msg) });
+	const { ipc } = createStartedIpc({ logger: (msg) => logs.push(msg) });
 
 	// _log 方法会加 [pion-ipc] 前缀
 	ipc._log('test message');

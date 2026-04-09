@@ -425,7 +425,7 @@ test('drain picks up messages queued during draining', async () => {
 	let sendCount = 0;
 	const ipc = createMockIpc();
 	// Slow IPC: simulate async delay
-	ipc.request = async (method, opts, payload) => {
+	ipc.request = async (method) => {
 		if (method === 'dc.send') {
 			sendCount++;
 			await new Promise((r) => setTimeout(r, 20));

@@ -1,5 +1,5 @@
-import { execSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 
 /**
  * Resolve the pion-ipc binary path.
@@ -16,12 +16,19 @@ function resolveBinary() {
 		return envBin;
 	}
 
-	// 2. PATH lookup
-	try {
-		const result = execSync('which pion-ipc', { encoding: 'utf8' }).trim();
-		if (result) return result;
-	} catch {
-		// not found in PATH
+	// 2. PATH lookup (cross-platform, no child process)
+	const isWin = process.platform === 'win32';
+	const pathDirs = (process.env.PATH || '').split(isWin ? ';' : ':');
+	const names = isWin
+		? ['pion-ipc.exe', 'pion-ipc.cmd', 'pion-ipc.bat', 'pion-ipc']
+		: ['pion-ipc'];
+
+	for (const dir of pathDirs) {
+		if (!dir) continue;
+		for (const name of names) {
+			const fullPath = join(dir, name);
+			if (existsSync(fullPath)) return fullPath;
+		}
 	}
 
 	throw new Error(

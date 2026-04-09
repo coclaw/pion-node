@@ -20,7 +20,7 @@ class RTCPeerConnection extends EventEmitter {
 		this._ipc = config._ipc;
 		this._pcId = config._pcId || randomUUID();
 		this._iceServers = config.iceServers || [];
-		this._dataChannels = new Map();
+		this._dataChannels = new Set();
 		this._connState = 'new';
 		this._iceState = 'new';
 		this._selectedCandidatePair = null;
@@ -81,7 +81,7 @@ class RTCPeerConnection extends EventEmitter {
 				_ordered: info.ordered !== false,
 				_remote: true,
 			});
-			this._dataChannels.set(evt.dcLabel, dc);
+			this._dataChannels.add(dc);
 			this.emit('datachannel', { channel: dc });
 		};
 
@@ -243,7 +243,7 @@ class RTCPeerConnection extends EventEmitter {
 			_ordered: opts.ordered !== false,
 			_remote: false,
 		});
-		this._dataChannels.set(label, dc);
+		this._dataChannels.add(dc);
 		// Async init: send dc.create IPC after pc is ready
 		this._ready
 			.then(() => dc._init())
@@ -262,7 +262,7 @@ class RTCPeerConnection extends EventEmitter {
 	 * Close this PeerConnection.
 	 */
 	async close() {
-		for (const dc of this._dataChannels.values()) {
+		for (const dc of this._dataChannels) {
 			dc._closed = true;
 			dc._sendQueue.length = 0;
 			dc._bufferedAmount = 0;
