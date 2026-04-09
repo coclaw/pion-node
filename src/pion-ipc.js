@@ -86,7 +86,12 @@ class PionIpc extends EventEmitter {
 		this._started = true;
 
 		// Verify process is ready
-		await this.request('ping');
+		try {
+			await this.request('ping');
+		} catch (err) {
+			await this.stop().catch(() => {});
+			throw err;
+		}
 		this._log('pion-ipc ready');
 	}
 
@@ -137,7 +142,9 @@ class PionIpc extends EventEmitter {
 	async request(method, opts = {}, payload) {
 		if (!this._started) throw new Error('not started');
 
-		const id = this._nextId++;
+		const id = this._nextId;
+		this._nextId = (this._nextId + 1) >>> 0;
+		if (this._nextId === 0) this._nextId = 1; // skip 0 (omitempty issue)
 		const header = {
 			type: 'req',
 			id,

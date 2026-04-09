@@ -7,16 +7,22 @@ import { encodeFrame } from './protocol.js';
 class FrameWriter {
 	constructor(stream) {
 		this._stream = stream;
+		this._error = null;
+		stream.on('error', (err) => {
+			this._error = err;
+		});
 	}
 
 	/**
 	 * Write a frame to the stream.
 	 * @param {object} header - Message header
 	 * @param {Buffer|Uint8Array} [payload] - Raw payload bytes
+	 * @returns {boolean} stream.write 返回值
 	 */
 	write(header, payload) {
+		if (this._error) throw this._error;
 		const frameBytes = encodeFrame(header, payload);
-		this._stream.write(frameBytes);
+		return this._stream.write(frameBytes);
 	}
 }
 

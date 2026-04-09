@@ -109,7 +109,7 @@ class PeerConnection extends EventEmitter {
 	 * @param {{ type: string, sdp: string }} desc
 	 */
 	async setLocalDescription(desc) {
-		await this._ipc.request('pc.setLocalDesc', { pcId: this._pcId }, {
+		await this._ipc.request('pc.setLocalDescription', { pcId: this._pcId }, {
 			type: desc.type,
 			sdp: desc.sdp,
 		});
