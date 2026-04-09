@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { encode } from '@msgpack/msgpack';
 import {
 	encodeFrame,
 	decodeFrame,
 	MAX_FRAME_SIZE,
+	HEADER_LEN_SIZE,
 } from '../src/ipc/protocol.js';
 
 test('empty payload roundtrip', () => {
@@ -141,4 +143,69 @@ test('rejects frame exceeding max size', () => {
 		() => encodeFrame(header, payload),
 		/frame too large/
 	);
+});
+
+test('decodeFrame with headerLen=0', () => {
+	// 构造 headerLen=0 的帧体：2 字节 headerLen(0) + 若干 payload
+	const body = Buffer.alloc(6);
+	body.writeUInt16LE(0, 0); // headerLen=0
+	body.write('data', 2);
+	// headerLen=0 → decode 空 msgpack 区域，msgpack 解码空 buffer 会抛错
+	assert.throws(() => decodeFrame(body));
+});
+
+test('frame at exact MAX_FRAME_SIZE boundary succeeds', () => {
+	const header = { type: 'req', id: 1, method: 'x' };
+	const headerBytes = encode(header);
+	// totalLen = HEADER_LEN_SIZE(2) + headerBytes.length + payloadLen = MAX_FRAME_SIZE
+	const payloadLen = MAX_FRAME_SIZE - HEADER_LEN_SIZE - headerBytes.length;
+	const payload = Buffer.alloc(payloadLen);
+	const frame = encodeFrame(header, payload);
+	const totalLen = frame.readUInt32LE(0);
+	assert.equal(totalLen, MAX_FRAME_SIZE);
+	const result = decodeFrame(frame.subarray(4, 4 + totalLen));
+	assert.equal(result.payload.length, payloadLen);
+});
+
+test('frame at MAX_FRAME_SIZE + 1 fails', () => {
+	const header = { type: 'req', id: 1, method: 'x' };
+	const headerBytes = encode(header);
+	// totalLen = HEADER_LEN_SIZE + headerBytes.length + payloadLen = MAX_FRAME_SIZE + 1
+	const payloadLen = MAX_FRAME_SIZE - HEADER_LEN_SIZE - headerBytes.length + 1;
+	const payload = Buffer.alloc(payloadLen);
+	assert.throws(
+		() => encodeFrame(header, payload),
+		/frame too large/
+	);
+});
+
+test('payload with all 256 byte values roundtrip', () => {
+	const header = { type: 'req', id: 1, method: 'allbytes' };
+	const payload = Buffer.alloc(256);
+	for (let i = 0; i < 256; i++) payload[i] = i;
+	const frame = encodeFrame(header, payload);
+	const totalLen = frame.readUInt32LE(0);
+	const result = decodeFrame(frame.subarray(4, 4 + totalLen));
+	assert.deepEqual(result.payload, payload);
+});
+
+test('decode header with missing optional fields', () => {
+	// 模拟 Go 的 omitempty：header 只有 { type: 'res', id: 1 }，无 ok/error
+	const header = { type: 'res', id: 1 };
+	const frame = encodeFrame(header);
+	const totalLen = frame.readUInt32LE(0);
+	const result = decodeFrame(frame.subarray(4, 4 + totalLen));
+	assert.equal(result.header.type, 'res');
+	assert.equal(result.header.id, 1);
+	assert.equal(result.header.ok, undefined);
+	assert.equal(result.header.error, undefined);
+});
+
+test('decode empty map header', () => {
+	const header = {};
+	const frame = encodeFrame(header);
+	const totalLen = frame.readUInt32LE(0);
+	const result = decodeFrame(frame.subarray(4, 4 + totalLen));
+	assert.deepEqual(result.header, {});
+	assert.equal(result.payload.length, 0);
 });
