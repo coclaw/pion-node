@@ -19,7 +19,11 @@ class RTCPeerConnection extends EventEmitter {
 		super();
 		this._ipc = config._ipc;
 		this._pcId = config._pcId || randomUUID();
-		this._iceServers = config.iceServers || [];
+		// W3C: urls 可为 string 或 string[]，Go 端要求 []string，统一规范化
+		this._iceServers = (config.iceServers || []).map((s) => ({
+			...s,
+			urls: Array.isArray(s.urls) ? s.urls : (s.urls ? [s.urls] : []),
+		}));
 		this._dataChannels = new Set();
 		this._connState = 'new';
 		this._iceState = 'new';
@@ -159,6 +163,15 @@ class RTCPeerConnection extends EventEmitter {
 	}
 
 	/**
+	 * W3C RTCSctpTransport.maxMessageSize 的简化暴露。
+	 * Pion SCTP 层出站限制硬编码 65536（pion/webrtc#758），此处如实报告。
+	 * 调用方应以 min(remoteMaxMessageSize, pc.maxMessageSize) 作为分片阈值。
+	 */
+	get maxMessageSize() {
+		return 65536;
+	}
+
+	/**
 	 * Create an SDP offer.
 	 * @returns {Promise<{ type: string, sdp: string }>}
 	 */
@@ -262,14 +275,14 @@ class RTCPeerConnection extends EventEmitter {
 	 * Close this PeerConnection.
 	 */
 	async close() {
-		for (const dc of this._dataChannels) {
-			dc._closed = true;
-			dc._sendQueue.length = 0;
-			dc._bufferedAmount = 0;
-			dc._detach();
-			dc._readyState = 'closed';
-			dc.emit('close');
-		}
+		// 优雅关闭每个 DC：先 await drain 完成，避免最后一条消息被丢弃。
+		// 这是与 RTCDataChannel.close() 同源的 W3C graceful close 修复 ——
+		// 任何由 pc.close 级联触发的 DC 关闭（rpc DC、生命周期 teardown 等）
+		// 都依赖此处的 await，否则同样会复现"最后一条 send 入队后被清空"的 bug。
+		const dcs = [...this._dataChannels];
+		await Promise.all(dcs.map((dc) => dc.close().catch(() => {
+			/* 单个 DC 关闭失败不阻断 PC 关闭 */
+		})));
 		this._dataChannels.clear();
 		this._detach();
 		if (this._connState !== 'closed') {

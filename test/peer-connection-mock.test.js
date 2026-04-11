@@ -33,8 +33,42 @@ test('constructor sends pc.create with pcId and iceServers', async () => {
 	assert.equal(ipc.requests[0].method, 'pc.create');
 	assert.deepEqual(ipc.requests[0].payload, {
 		pcId: 'pc-1',
-		iceServers: [{ urls: 'stun:stun.example.com' }],
+		iceServers: [{ urls: ['stun:stun.example.com'] }],
 	});
+});
+
+test('constructor normalizes iceServers urls to arrays', async () => {
+	const ipc = createMockIpc();
+
+	// string → [string]
+	const pc1 = new RTCPeerConnection({
+		iceServers: [{ urls: 'turn:turn.example.com', username: 'u', credential: 'c' }],
+		_ipc: ipc, _pcId: 'pc-norm-1',
+	});
+	await pc1._ready;
+	assert.deepEqual(pc1._iceServers[0].urls, ['turn:turn.example.com']);
+	assert.equal(pc1._iceServers[0].username, 'u');
+
+	// already array → unchanged
+	const pc2 = new RTCPeerConnection({
+		iceServers: [{ urls: ['stun:a', 'stun:b'] }],
+		_ipc: ipc, _pcId: 'pc-norm-2',
+	});
+	await pc2._ready;
+	assert.deepEqual(pc2._iceServers[0].urls, ['stun:a', 'stun:b']);
+
+	// missing urls → []
+	const pc3 = new RTCPeerConnection({
+		iceServers: [{}],
+		_ipc: ipc, _pcId: 'pc-norm-3',
+	});
+	await pc3._ready;
+	assert.deepEqual(pc3._iceServers[0].urls, []);
+
+	// no iceServers → []
+	const pc4 = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-norm-4' });
+	await pc4._ready;
+	assert.deepEqual(pc4._iceServers, []);
 });
 
 test('pcId defaults to a UUID when not provided', () => {
@@ -286,6 +320,33 @@ test('on* property setters work', () => {
 		payload: Buffer.from(encode({ connState: 'closed', iceState: 'connected' })),
 	});
 	assert.equal(calls.length, 2); // no new calls
+});
+
+test('pc.close graceful: 子 DC 的 sendQueue 排空后才真正关闭（最后一条消息不丢）', async () => {
+	const sentPayloads = [];
+	const ipc = createMockIpc();
+	ipc.request = async (method, opts, payload) => {
+		if (method === 'dc.send') {
+			sentPayloads.push(payload?.toString?.('utf8') ?? String(payload));
+			await new Promise((r) => setTimeout(r, 20));
+		}
+		return { header: {}, payload: Buffer.alloc(0) };
+	};
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-graceful' });
+	const dc = pc.createDataChannel('rpc');
+	// 等 _init 完成
+	await new Promise((r) => setTimeout(r, 30));
+	// 模拟 open
+	ipc.emit('dc.open', { pcId: 'pc-graceful', dcLabel: 'rpc' });
+
+	dc.send('msg-A');
+	dc.send('msg-B');
+	dc.send('LAST'); // 入队，未 drain
+	// pc.close 必须先排空 dc 的队列
+	await pc.close();
+
+	assert.equal(sentPayloads.length, 3, 'pc.close should drain DC queue before closing');
+	assert.deepEqual(sentPayloads, ['msg-A', 'msg-B', 'LAST']);
 });
 
 test('close detaches all listeners', async () => {
