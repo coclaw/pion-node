@@ -46,7 +46,7 @@ class PionIpc extends EventEmitter {
 
 		this._proc.on('error', (err) => {
 			this._log(`process error: ${err.message}`);
-			this.emit('error', err);
+			this.__safeEmit('error', err);
 		});
 
 		this._proc.on('exit', (code, signal) => {
@@ -76,7 +76,7 @@ class PionIpc extends EventEmitter {
 
 		this._reader.onError((err) => {
 			this._log(`reader error: ${err.message}`);
-			this.emit('error', err);
+			this.__safeEmit('error', err);
 		});
 
 		this._reader.onEnd(() => {
@@ -171,7 +171,7 @@ class PionIpc extends EventEmitter {
 				reject(new Error(`request timeout: ${method} (id=${id})`));
 			}, this._timeout);
 
-			this._pending.set(id, { resolve, reject, timer });
+			this._pending.set(id, { resolve, reject, timer, method });
 			try {
 				this._writer.write(header, payloadBuf);
 			} catch (err) {
@@ -194,6 +194,8 @@ class PionIpc extends EventEmitter {
 		if (header.ok) {
 			entry.resolve({ header, payload });
 		} else {
+			// 始终记录 IPC 层错误（含 method 上下文），即使上层 catch 了也保留诊断痕迹
+			this._log(`request error id=${header.id} method=${entry.method} err=${header.error || 'request failed'}`);
 			entry.reject(new Error(header.error || 'request failed'));
 		}
 	}
@@ -216,7 +218,32 @@ class PionIpc extends EventEmitter {
 	}
 
 	_log(msg) {
-		this._logger?.(`[pion-ipc] ${msg}`);
+		try {
+			if (this._logger) {
+				this._logger(`[pion-ipc] ${msg}`);
+			} else {
+				// 兜底：未配置 logger 时仍要让错误可见，避免静默吞掉诊断
+				console.warn(`[pion-ipc] ${msg}`);
+			}
+		/* c8 ignore next 3 -- logger 抛异常属罕见，吞掉以保证调用方不被污染 */
+		} catch {
+			// nothing
+		}
+	}
+
+	/**
+	 * 安全 emit：仅在有 listener 时 emit 且吞 listener 异常。
+	 * 与 RTCDataChannel.__safeEmit 同语义，避免 EventEmitter 默认行为
+	 * 在没有应用层注册时杀掉宿主进程。
+	 */
+	__safeEmit(event, ...args) {
+		if (this.listenerCount(event) === 0) return;
+		try {
+			this.emit(event, ...args);
+		/* c8 ignore next 3 -- listener 抛异常属罕见 */
+		} catch (err) {
+			this._log(`emit ${event} listener threw: ${err?.message ?? err}`);
+		}
 	}
 
 	get started() {

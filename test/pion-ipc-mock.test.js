@@ -246,3 +246,68 @@ test('error response without message uses default', async () => {
 
 	await assert.rejects(promise, /request failed/);
 });
+
+test('error response is logged with method context', async () => {
+	const logs = [];
+	const { ipc, proc } = createStartedIpc({ logger: (msg) => logs.push(msg) });
+
+	const promise = ipc.request('dc.send');
+	setTimeout(() => injectResponse(proc, 1, false, null, 'io: closed pipe'), 5);
+
+	await assert.rejects(promise, /closed pipe/);
+
+	// 必须包含 method 名和错误描述，便于关联诊断
+	assert.ok(logs.some((m) => /request error/.test(m) && /method=dc\.send/.test(m) && /closed pipe/.test(m)),
+		`expected log with method+err, got: ${JSON.stringify(logs)}`);
+});
+
+test('_log falls back to console.warn when no logger configured', () => {
+	const { ipc } = createStartedIpc();
+	const original = console.warn;
+	const calls = [];
+	console.warn = (msg) => calls.push(msg);
+	try {
+		ipc._log('fallback test');
+	} finally {
+		console.warn = original;
+	}
+	assert.equal(calls.length, 1);
+	assert.match(calls[0], /\[pion-ipc\] fallback test/);
+});
+
+test('_log swallows logger exceptions', () => {
+	const { ipc } = createStartedIpc({ logger: () => { throw new Error('log boom'); } });
+	assert.doesNotThrow(() => ipc._log('swallow me'));
+});
+
+test('PionIpc.__safeEmit swallows listener exceptions and logs', () => {
+	const logs = [];
+	const { ipc } = createStartedIpc({ logger: (msg) => logs.push(msg) });
+	ipc.on('custom', () => { throw new Error('listener boom'); });
+
+	assert.doesNotThrow(() => ipc.__safeEmit('custom', 'arg1'));
+	assert.ok(logs.some((m) => /emit custom listener threw/.test(m) && /listener boom/.test(m)),
+		`expected listener-threw log, got: ${JSON.stringify(logs)}`);
+});
+
+test('PionIpc.__safeEmit no-op when no listeners', () => {
+	const logs = [];
+	const { ipc } = createStartedIpc({ logger: (msg) => logs.push(msg) });
+	assert.doesNotThrow(() => ipc.__safeEmit('error', new Error('silent')));
+	// 无 listener 时不 log（避免 log 噪声）
+	assert.equal(logs.length, 0);
+});
+
+test('PionIpc.__safeEmit error path: no crash without listener', () => {
+	// 模拟 proc/reader 错误回调最终调用 __safeEmit('error', ...) 的场景
+	// 应用层未注册 ipc.on('error') —— 这是 gateway 崩溃的根因
+	const logs = [];
+	const { ipc } = createStartedIpc({ logger: (msg) => logs.push(msg) });
+	assert.equal(ipc.listenerCount('error'), 0);
+
+	assert.doesNotThrow(() => {
+		ipc.__safeEmit('error', new Error('proc died'));
+	});
+	// 无 listener 时不 log（避免噪声），错误的可见性由调用方的 _log 提供
+	assert.equal(logs.length, 0);
+});
