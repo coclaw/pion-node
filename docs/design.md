@@ -137,15 +137,16 @@ The PionIpc class manages the Go process lifecycle:
 - **stop()**: Closes stdin (signaling the Go process to exit gracefully), waits for the process to exit with a configurable timeout, and sends SIGTERM if the timeout expires.
 - **Crash handling**: If the process exits unexpectedly, all pending requests are rejected, and an `exit` event is emitted. RTCPeerConnection and RTCDataChannel react to the `exit` event by transitioning to terminal states (see below).
 
-### Crash Recovery: Auto-Restart
+### Crash Recovery: Watchdog
 
-When `autoRestart: true` is passed to `PionIpc`, the SDK automatically restarts the Go process after an unexpected exit:
+When `autoRestart: true` is passed to `PionIpc`, the SDK acts as a watchdog — automatically restarting the Go process after an unexpected exit, retrying indefinitely until `stop()` is called:
 
 1. **Detection**: The child process `exit` event triggers `_handleProcessExit()`. All pending requests are rejected, `exit` event is emitted (RTCPeerConnection/RTCDataChannel react), and `_proc` is nulled.
-2. **Restart**: After an exponential-backoff delay (200ms, 400ms, 800ms, ...), `start()` is called to spawn a new process. On success, a `restart` event is emitted.
-3. **Circuit breaker**: If restart fails `maxRestartAttempts` (default 5) times within the `restartResetWindowMs` (default 60s), a `fatal` event is emitted and auto-restart gives up.
-4. **Stability reset**: If the process runs stably for `restartResetWindowMs`, the attempt counter resets to zero.
-5. **Intentional stop**: `stop()` sets an internal `_intentionalStop` flag and clears any pending restart timer. This prevents auto-restart after deliberate shutdown.
+2. **Restart**: After a capped exponential-backoff delay (200ms, 400ms, ... up to `maxBackoffMs`, default 30s), `start()` is called to spawn a new process. On success, a `restart` event is emitted.
+3. **Infinite retry**: The watchdog retries indefinitely. There is no max attempt limit — the capped backoff ensures the system doesn't spin too fast while still recovering promptly.
+4. **Stability reset**: If the process runs stably for `restartResetWindowMs` (default 60s), the backoff attempt counter resets to zero, so the next crash starts with a short delay again.
+5. **Intentional stop**: `stop()` sets internal `_stopped` and `_intentionalStop` flags and clears any pending restart timer. This permanently halts the watchdog. A new `start()` call resets these flags.
+6. **Internal abort vs external stop**: When `start()` fails during a watchdog restart (e.g., ping timeout), it calls `_abortStart()` — which cleans up the process without setting `_stopped`, allowing the watchdog to continue retrying. This is distinct from `stop()` which permanently halts the watchdog.
 
 After restart, old PeerConnections/DataChannels are dead (they already transitioned to `failed`/`closed`). New PeerConnections created after restart automatically use the restarted process through the same PionIpc instance. This makes crash recovery transparent to callers — they only observe the standard W3C state transitions.
 

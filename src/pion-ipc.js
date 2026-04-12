@@ -6,18 +6,20 @@ import { FrameWriter } from './ipc/writer.js';
 import { resolveBinary } from './binary.js';
 
 const DEFAULT_TIMEOUT = 10_000;
-const DEFAULT_MAX_RESTART_ATTEMPTS = 5;
 const DEFAULT_RESTART_RESET_WINDOW_MS = 60_000;
 const RESTART_BASE_DELAY_MS = 200;
+const DEFAULT_MAX_BACKOFF_MS = 30_000;
 
 /**
  * Manages a pion-ipc Go child process, providing request/response IPC
  * and event emission.
  *
- * Events: 'exit', 'error', 'restart', 'fatal'
+ * Events: 'exit', 'error', 'restart'
  * - 'exit' (code, signal): process exited (crash or stop)
- * - 'restart': auto-restart succeeded
- * - 'fatal': auto-restart gave up (max attempts reached)
+ * - 'restart': watchdog auto-restart succeeded
+ *
+ * When autoRestart is enabled, PionIpc acts as a watchdog: it retries
+ * indefinitely with capped exponential backoff until stop() is called.
  */
 class PionIpc extends EventEmitter {
 	/**
@@ -25,8 +27,8 @@ class PionIpc extends EventEmitter {
 	 * @param {string} [opts.binPath] - Path to pion-ipc binary (overrides auto-detection)
 	 * @param {Function} [opts.logger] - Logging function (receives string)
 	 * @param {number} [opts.timeout] - Default request timeout in ms
-	 * @param {boolean} [opts.autoRestart] - Auto-restart on crash (default false)
-	 * @param {number} [opts.maxRestartAttempts] - Max restart attempts within window (default 5)
+	 * @param {boolean} [opts.autoRestart] - Watchdog mode: auto-restart on crash (default false)
+	 * @param {number} [opts.maxBackoffMs] - Max backoff delay for watchdog retries (default 30s)
 	 * @param {number} [opts.restartResetWindowMs] - Stable uptime before resetting attempt counter (default 60s)
 	 */
 	constructor(opts = {}) {
@@ -41,11 +43,12 @@ class PionIpc extends EventEmitter {
 		this._pending = new Map(); // id -> { resolve, reject, timer }
 		this._started = false;
 
-		// auto-restart 相关
+		// watchdog 相关
 		this._autoRestart = !!opts.autoRestart;
-		this._maxRestartAttempts = opts.maxRestartAttempts ?? DEFAULT_MAX_RESTART_ATTEMPTS;
+		this._maxBackoffMs = opts.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
 		this._restartResetWindowMs = opts.restartResetWindowMs ?? DEFAULT_RESTART_RESET_WINDOW_MS;
 		this._intentionalStop = false;
+		this._stopped = false;
 		this._restartAttempts = 0;
 		this._restartTimer = null;
 		this._resetTimer = null;
@@ -57,6 +60,11 @@ class PionIpc extends EventEmitter {
 	 */
 	async start() {
 		if (this._started) throw new Error('already started');
+		this._stopped = false;
+		this._intentionalStop = false;
+		// 清除残留 watchdog timer：外部直接调 start() 时，可能有 pending 的重启 timer，
+		// 若不清除，timer 触发后会 hit "already started" 并无限循环。
+		clearTimeout(this._restartTimer);
 
 		const bin = this._binPath || resolveBinary();
 		this._log(`spawning ${bin}`);
@@ -101,12 +109,16 @@ class PionIpc extends EventEmitter {
 
 		this._started = true;
 		this._lastStartTime = Date.now();
+		// ping 验证前设 _intentionalStop：若进程在 await 期间崩溃，
+		// 防止 _handleProcessExit 与下方 catch 路径同时触发 _scheduleRestart。
+		this._intentionalStop = true;
 
 		// Verify process is ready
 		try {
 			await this.request('ping');
+			this._intentionalStop = false;
 		} catch (err) {
-			await this.stop().catch(() => {});
+			await this._abortStart().catch(() => {});
 			throw err;
 		}
 
@@ -117,7 +129,7 @@ class PionIpc extends EventEmitter {
 	}
 
 	/**
-	 * Stop the pion-ipc process gracefully.
+	 * Stop the pion-ipc process gracefully and permanently halt the watchdog.
 	 * Closes stdin to signal the Go process, then waits for exit with a timeout.
 	 * @param {number} [timeout=5000] - Max ms to wait before SIGTERM
 	 */
@@ -125,9 +137,28 @@ class PionIpc extends EventEmitter {
 		// 先设标记再检查 _proc——即使进程已崩溃（_proc 被 exit handler 置 null），
 		// 仍需取消待执行的 restart timer，否则 stop() 后进程会被意外重启。
 		this._intentionalStop = true;
+		this._stopped = true;
 		clearTimeout(this._restartTimer);
 		clearTimeout(this._resetTimer);
+		await this._killProc(timeout, 'ipc stopped');
+	}
 
+	/**
+	 * Internal: abort a failed start() — clean up without permanently halting the watchdog.
+	 * _intentionalStop 已在 start() 的 ping 前预设为 true，此处无需再设。
+	 */
+	async _abortStart(timeout = 5000) {
+		clearTimeout(this._restartTimer);
+		clearTimeout(this._resetTimer);
+		await this._killProc(timeout, 'ipc start aborted');
+	}
+
+	/**
+	 * Internal: kill the Go process and reject all pending IPC requests.
+	 * @param {number} timeout - Max ms to wait before SIGTERM
+	 * @param {string} reason - Error message for pending rejections
+	 */
+	async _killProc(timeout, reason) {
 		if (!this._proc) return;
 
 		const proc = this._proc;
@@ -141,14 +172,14 @@ class PionIpc extends EventEmitter {
 				if (settled) return;
 				settled = true;
 				clearTimeout(timer);
-				this._rejectAllPending(new Error('ipc stopped'));
+				this._rejectAllPending(new Error(reason));
 				resolve();
 			};
 
 			proc.on('exit', done);
 
 			const timer = setTimeout(() => {
-				this._log('stop timeout, sending SIGTERM');
+				this._log(`${reason}: timeout, sending SIGTERM`);
 				proc.kill('SIGTERM');
 				// Give it a bit more time after SIGTERM
 				setTimeout(done, 1000);
@@ -288,31 +319,28 @@ class PionIpc extends EventEmitter {
 	}
 
 	/**
-	 * Auto-restart after crash: exponential backoff, emits 'fatal' when max attempts exceeded.
+	 * Watchdog: schedule a restart attempt with capped exponential backoff.
+	 * Retries indefinitely until stop() is called.
 	 */
 	_scheduleRestart() {
+		const delay = Math.min(
+			RESTART_BASE_DELAY_MS * Math.pow(2, this._restartAttempts),
+			this._maxBackoffMs,
+		);
 		this._restartAttempts++;
-		if (this._restartAttempts > this._maxRestartAttempts) {
-			this._log(`auto-restart gave up after ${this._maxRestartAttempts} attempts`);
-			this.__safeEmit('fatal', new Error(`restart failed after ${this._maxRestartAttempts} attempts`));
-			return;
-		}
-
-		const delay = RESTART_BASE_DELAY_MS * Math.pow(2, this._restartAttempts - 1);
-		this._log(`auto-restart attempt ${this._restartAttempts}/${this._maxRestartAttempts} in ${delay}ms`);
+		this._log(`watchdog: restart #${this._restartAttempts} in ${delay}ms`);
 
 		this._restartTimer = setTimeout(async () => {
+			if (this._stopped) return;
+			// start() 重置 _intentionalStop = false（成功后由崩溃重新触发 watchdog），
+			// 失败时调 _abortStart()（不设 _stopped），catch 路径继续重试。
 			try {
 				await this.start();
-				this._log('auto-restart succeeded');
+				this._log('watchdog: restart succeeded');
 				this.__safeEmit('restart');
 			} catch (err) {
-				this._log(`auto-restart failed: ${err.message}`);
-				// start() 失败会调 stop()，stop() 设 _intentionalStop = true。
-				// 若是外部 stop() 导致的，尊重其意图不再重试；
-				// 若仅是 start 内部 stop 导致的，重置后继续重试。
-				if (this._intentionalStop) return;
-				this._intentionalStop = false;
+				this._log(`watchdog: restart failed: ${err.message}`);
+				if (this._stopped) return;
 				this._scheduleRestart();
 			}
 		}, delay);
