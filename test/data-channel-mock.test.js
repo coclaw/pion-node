@@ -313,22 +313,96 @@ test('R 方案: close() 之后 getter 返回 0 (cache 已清零)', async () => {
 	assert.equal(dc._bufferedAmount, 0);
 });
 
-test('R 方案: bufferedamountlow IPC 事件仅 emit，不 mutate _goBufferedBytes', async () => {
+test('R 方案: bal IPC 后 _refreshGoBA 从 dc.getBA 刷新 _goBufferedBytes', async () => {
+	const { encode } = await import('@msgpack/msgpack');
 	const ipc = createMockIpc();
+	const origReq = ipc.request;
+	ipc.request = async (method, opts, payload) => {
+		if (method === 'dc.getBA') {
+			return { header: {}, payload: Buffer.from(encode({ bufferedAmount: 200 })) };
+		}
+		return origReq(method, opts, payload);
+	};
 	const dc = createOpenDc(ipc);
-	// 设置 threshold 并注入残留 cache
-	dc.bufferedAmountLowThreshold = 1024;
-	await new Promise((r) => setTimeout(r, 20));
 	dc._goBufferedBytes = 5000;
 
-	// 触发 Go-side bufferedamountlow IPC 事件
 	const events = [];
 	dc.on('bufferedamountlow', () => events.push('bal'));
 	ipc.emit('dc.bufferedamountlow', { pcId: 'pc-1', dcLabel: 'rpc' });
 
-	// _goBufferedBytes 保持原值——bal IPC 事件不携带 BA 数据，drain ack 才是真值源
-	assert.equal(dc._goBufferedBytes, 5000, 'cache must not be mutated by bal event');
+	await new Promise((r) => setTimeout(r, 20));
+
+	assert.equal(dc._goBufferedBytes, 200, 'dc.getBA 应刷新 _goBufferedBytes');
 	assert.equal(events.length, 1, 'event emitted');
+});
+
+test('R 方案: _refreshGoBA dc.getBA 失败时仍 emit bufferedamountlow（旧行为回退）', async () => {
+	const ipc = createMockIpc();
+	const origReq = ipc.request;
+	ipc.request = async (method, opts, payload) => {
+		if (method === 'dc.getBA') throw new Error('IPC dead');
+		return origReq(method, opts, payload);
+	};
+	const dc = createOpenDc(ipc);
+	dc._goBufferedBytes = 5000;
+
+	const events = [];
+	dc.on('bufferedamountlow', () => events.push('bal'));
+	ipc.emit('dc.bufferedamountlow', { pcId: 'pc-1', dcLabel: 'rpc' });
+
+	await new Promise((r) => setTimeout(r, 20));
+
+	// 缓存不变（IPC 失败保留旧值）
+	assert.equal(dc._goBufferedBytes, 5000, '_goBufferedBytes 应保持不变');
+	// 仍 emit 事件（旧行为回退，不阻断上层流控）
+	assert.equal(events.length, 1, 'event emitted despite IPC failure');
+});
+
+test('R 方案: _refreshGoBA 在 close 后不调 dc.getBA', async () => {
+	const ipc = createMockIpc();
+	const dc = createOpenDc(ipc);
+	await dc.close();
+
+	const reqsBefore = ipc.requests.length;
+	// 直接调用 _refreshGoBA（模拟 close 后的残余 bal 事件）
+	dc._refreshGoBA();
+	await new Promise((r) => setTimeout(r, 20));
+
+	const getBAReqs = ipc.requests.slice(reqsBefore).filter((r) => r.method === 'dc.getBA');
+	assert.equal(getBAReqs.length, 0, 'close 后不应发 dc.getBA');
+});
+
+test('R 方案: _refreshGoBA close 期间 in-flight dc.getBA 不更新缓存也不 emit', async () => {
+	const { encode } = await import('@msgpack/msgpack');
+	let resolveGetBA;
+	const ipc = createMockIpc();
+	const origReq = ipc.request;
+	ipc.request = async (method, opts, payload) => {
+		if (method === 'dc.getBA') {
+			return new Promise((r) => { resolveGetBA = r; });
+		}
+		return origReq(method, opts, payload);
+	};
+	const dc = createOpenDc(ipc);
+	dc._goBufferedBytes = 5000;
+
+	const events = [];
+	dc.on('bufferedamountlow', () => events.push('bal'));
+
+	// 触发 _refreshGoBA——dc.getBA 请求 in flight
+	ipc.emit('dc.bufferedamountlow', { pcId: 'pc-1', dcLabel: 'rpc' });
+	await new Promise((r) => setTimeout(r, 10));
+
+	// 在 dc.getBA pending 期间关闭 DC
+	await dc.close();
+
+	// 此时 resolve 之前 pending 的 dc.getBA
+	resolveGetBA({ header: {}, payload: Buffer.from(encode({ bufferedAmount: 42 })) });
+	await new Promise((r) => setTimeout(r, 20));
+
+	// .then() 异步守卫检测到 _closed，不应更新缓存或 emit
+	assert.equal(dc._goBufferedBytes, 0, 'close 已清零，不应被 in-flight 响应覆盖');
+	assert.equal(events.length, 0, 'post-close 不应 emit bufferedamountlow');
 });
 
 test('R 方案: threshold-cross 检测使用 sum (JS+Go)，避免 JS 队列空但 Go 仍满时虚假早醒', async () => {
@@ -626,36 +700,41 @@ test('dc.error emits Error', () => {
 	assert.equal(errors[0].message, 'something broke');
 });
 
-test('dc.bufferedamountlow event fires', () => {
+test('dc.bufferedamountlow event fires after dc.getBA refresh', async () => {
 	const ipc = createMockIpc();
-	// 必须在 open 状态——R 方案下 _onDcBal handler 在非 open 状态会丢弃事件
 	const dc = createOpenDc(ipc);
 
 	let fired = false;
 	dc.on('bufferedamountlow', () => { fired = true; });
 
+	// label 不匹配——不触发
 	ipc.emit('dc.bufferedamountlow', { pcId: 'pc-1', dcLabel: 'other' });
+	await new Promise((r) => setTimeout(r, 20));
 	assert.equal(fired, false);
 
+	// 匹配——通过 dc.getBA roundtrip 后 emit
 	ipc.emit('dc.bufferedamountlow', { pcId: 'pc-1', dcLabel: 'rpc' });
+	await new Promise((r) => setTimeout(r, 20));
 	assert.equal(fired, true);
 });
 
-test('R 方案: dc.bufferedamountlow 在 connecting/closed 状态被丢弃', () => {
+test('R 方案: dc.bufferedamountlow 在 connecting/closed 状态被丢弃', async () => {
 	const ipc = createMockIpc();
 	const dc = new RTCDataChannel({ _ipc: ipc, _pcId: 'pc-1', _label: 'rpc' });
 
 	const events = [];
 	dc.on('bufferedamountlow', () => events.push('bal'));
 
-	// connecting 状态
+	// connecting 状态——_onDcBal 直接 return，不调 _refreshGoBA
 	assert.equal(dc.readyState, 'connecting');
 	ipc.emit('dc.bufferedamountlow', { pcId: 'pc-1', dcLabel: 'rpc' });
+	await new Promise((r) => setTimeout(r, 20));
 	assert.equal(events.length, 0, 'connecting 状态不应触发');
 
 	// 切到 closed
 	dc._readyState = 'closed';
 	ipc.emit('dc.bufferedamountlow', { pcId: 'pc-1', dcLabel: 'rpc' });
+	await new Promise((r) => setTimeout(r, 20));
 	assert.equal(events.length, 0, 'closed 状态不应触发');
 });
 

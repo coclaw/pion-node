@@ -28,11 +28,10 @@ class RTCDataChannel extends EventEmitter {
 		// _bufferedAmount = JS-side 估算（sendQueue + IPC in-flight），同步维护
 		this._bufferedAmount = 0;
 		// _goBufferedBytes = Go-side 实际 SCTP BufferedAmount 的缓存
-		// **R 方案**：仅由 drain loop 在收到 dc.send IPC ack 时从 ack.payload 解析更新——
-		// 这是唯一权威源。Go-side `dc.bufferedamountlow` IPC 事件**不携带任何 BA 数据**
-		// （pion-ipc datachannel.go:60 SendEvent payload=nil），因此 _onDcBal 不应再
-		// mutate 这个缓存——历史上的 "clamp 到 threshold" 是 bug，会用静态阈值覆盖真值，
-		// 在 plugin 主动 pump 时让 dc.bufferedAmount 严重低估，HWM 流控失效。
+		// 由两条路径更新：
+		// 1. drain loop 在收到 dc.send IPC ack 时从 ack.payload 解析（主路径）
+		// 2. _refreshGoBA() 在收到 bal IPC 事件后主动 dc.getBA 查询（补充路径）
+		// 两者都来自 Go 真值，后到者覆盖。
 		this._goBufferedBytes = 0;
 		this._bufferedAmountLowThreshold = 0;
 		this._sendQueue = [];
@@ -67,11 +66,8 @@ class RTCDataChannel extends EventEmitter {
 		};
 		this._onDcBal = (evt) => {
 			if (evt.pcId !== this._pcId || evt.dcLabel !== this._label) return;
-			// closed/closing 状态下不再处理（避免在 close 后被 Go 残余事件错误重置）
 			if (this._readyState !== 'open') return;
-			// 仅 emit W3C 事件，不要 mutate _goBufferedBytes —— bal IPC 事件不携带 BA 数据，
-			// drain loop 的 ack 才是唯一权威源。
-			this.__safeEmit('bufferedamountlow');
+			this._refreshGoBA();
 		};
 
 		this._ipc.on('dc.open', this._onDcOpen);
@@ -277,6 +273,42 @@ class RTCDataChannel extends EventEmitter {
 				this._ipc?._log?.(`dc ${this._label} emit ${event} listener threw: ${err?.message ?? err}`);
 			} catch { /* nothing */ }
 		}
+	}
+
+	/**
+	 * bal IPC 后主动查询 Go-side BA，刷新 _goBufferedBytes 缓存，然后 emit bufferedamountlow。
+	 * 解决 bal 事件不携带 BA 数据导致缓存过期的问题——长空闲后上层可能因旧缓存
+	 * 误判 BA 高于实际而拒绝发送，形成死锁。
+	 *
+	 * per-PC worker 保证 dc.getBA 在同 PC 的串行队列中执行，无竞态。
+	 */
+	_refreshGoBA() {
+		if (this._closed) return;
+		this._ipc.request('dc.getBA', {
+			pcId: this._pcId,
+			dcLabel: this._label,
+		}).then((res) => {
+			if (this._closed || this._readyState !== 'open') return;
+			if (res?.payload && res.payload.length > 0) {
+				try {
+					const decoded = decode(res.payload);
+					const goBA = Number(decoded?.bufferedAmount);
+					if (Number.isFinite(goBA) && goBA >= 0) {
+						this._goBufferedBytes = goBA;
+					}
+				/* c8 ignore next 3 -- decode 失败保留旧值，下次 ack 自然校正 */
+				} catch {
+					// keep stale value
+				}
+			}
+			this.__safeEmit('bufferedamountlow');
+		}).catch((err) => {
+			// IPC 失败——仍 emit（旧行为回退），保持缓存不变
+			this._ipc?._log?.(`dc ${this._label} dc.getBA failed: ${err?.message}`);
+			if (!this._closed && this._readyState === 'open') {
+				this.__safeEmit('bufferedamountlow');
+			}
+		});
 	}
 
 	/**
