@@ -135,7 +135,37 @@ The PionIpc class manages the Go process lifecycle:
 
 - **start()**: Spawns the process, sets up stream readers, and verifies readiness with a `ping` request. If the ping fails, the process is killed and the error is thrown.
 - **stop()**: Closes stdin (signaling the Go process to exit gracefully), waits for the process to exit with a configurable timeout, and sends SIGTERM if the timeout expires.
-- **Crash handling**: If the process exits unexpectedly, all pending requests are rejected, and an `exit` event is emitted. The caller can implement restart logic as needed.
+- **Crash handling**: If the process exits unexpectedly, all pending requests are rejected, and an `exit` event is emitted. RTCPeerConnection and RTCDataChannel react to the `exit` event by transitioning to terminal states (see below).
+
+### Crash Recovery: Auto-Restart
+
+When `autoRestart: true` is passed to `PionIpc`, the SDK automatically restarts the Go process after an unexpected exit:
+
+1. **Detection**: The child process `exit` event triggers `_handleProcessExit()`. All pending requests are rejected, `exit` event is emitted (RTCPeerConnection/RTCDataChannel react), and `_proc` is nulled.
+2. **Restart**: After an exponential-backoff delay (200ms, 400ms, 800ms, ...), `start()` is called to spawn a new process. On success, a `restart` event is emitted.
+3. **Circuit breaker**: If restart fails `maxRestartAttempts` (default 5) times within the `restartResetWindowMs` (default 60s), a `fatal` event is emitted and auto-restart gives up.
+4. **Stability reset**: If the process runs stably for `restartResetWindowMs`, the attempt counter resets to zero.
+5. **Intentional stop**: `stop()` sets an internal `_intentionalStop` flag and clears any pending restart timer. This prevents auto-restart after deliberate shutdown.
+
+After restart, old PeerConnections/DataChannels are dead (they already transitioned to `failed`/`closed`). New PeerConnections created after restart automatically use the restarted process through the same PionIpc instance. This makes crash recovery transparent to callers — they only observe the standard W3C state transitions.
+
+### Process Crash: State Transitions
+
+When the Go process exits, RTCPeerConnection and RTCDataChannel transition to terminal states immediately, without waiting for or sending any IPC messages:
+
+**RTCPeerConnection** on `ipc.emit('exit')`:
+- Force-closes all associated DataChannels via `_forceClose()`
+- Sets `connectionState` to `'failed'` and `iceConnectionState` to `'failed'`
+- Emits `connectionstatechange` and `iceconnectionstatechange`
+- Detaches all IPC event listeners (including the exit listener itself)
+- Guard: already `closed` or `failed` PCs are skipped (no double-transition)
+
+**RTCDataChannel** `_forceClose()`:
+- Synchronously sets `readyState` to `'closed'`, clears send queue and buffered amount counters
+- Emits `close`
+- Detaches all IPC event listeners
+- Does NOT send `dc.close` IPC (process is dead)
+- Guard: already closed channels are skipped
 
 ### Binary Distribution
 
@@ -177,5 +207,5 @@ This keeps the npm package lightweight (no bundled binaries) and allows users to
 
 - **DataChannel only**: Audio/video tracks are not supported (mirrors the pion-ipc limitation).
 - **No `RTCSessionDescription` / `RTCIceCandidate` classes**: Plain objects are used throughout. This simplifies serialization but means instanceof checks won't work.
-- **Single Go process per PionIpc instance**: Multiple PeerConnections share one process. If the process crashes, all PeerConnections are lost. For isolation, create multiple PionIpc instances.
-- **No automatic reconnection**: If the Go process exits, the caller must create a new PionIpc instance and re-establish PeerConnections. The SDK does not attempt automatic recovery.
+- **Single Go process per PionIpc instance**: Multiple PeerConnections share one process. If the process crashes, all PeerConnections are lost (transitioned to `failed`). With `autoRestart: true`, the process is automatically restarted, but old PeerConnections must be recreated.
+- **Restart window**: During the brief restart period (~200ms), creating new PeerConnections will fail with "not started". Callers should handle this as a transient error and retry.

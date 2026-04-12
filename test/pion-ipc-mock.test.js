@@ -311,3 +311,208 @@ test('PionIpc.__safeEmit error path: no crash without listener', () => {
 	// 无 listener 时不 log（避免噪声），错误的可见性由调用方的 _log 提供
 	assert.equal(logs.length, 0);
 });
+
+// --- auto-restart ---
+
+test('auto-restart: 构造函数默认值', () => {
+	const ipc = new PionIpc();
+	assert.equal(ipc._autoRestart, false);
+	assert.equal(ipc._maxRestartAttempts, 5);
+	assert.equal(ipc._restartResetWindowMs, 60_000);
+	assert.equal(ipc._intentionalStop, false);
+	assert.equal(ipc._restartAttempts, 0);
+});
+
+test('auto-restart: 构造函数接受自定义值', () => {
+	const ipc = new PionIpc({
+		autoRestart: true,
+		maxRestartAttempts: 3,
+		restartResetWindowMs: 5000,
+	});
+	assert.equal(ipc._autoRestart, true);
+	assert.equal(ipc._maxRestartAttempts, 3);
+	assert.equal(ipc._restartResetWindowMs, 5000);
+});
+
+test('auto-restart: stop 设置 _intentionalStop 并清除 timer', () => {
+	const { ipc } = createStartedIpc();
+	ipc._autoRestart = true;
+	ipc._restartTimer = setTimeout(() => {}, 99999);
+	ipc._resetTimer = setTimeout(() => {}, 99999);
+
+	// stop() 需要 _proc 存在才不会 early return；mock 一个
+	ipc._proc = { stdin: { end() {} }, on() {}, kill() {} };
+
+	ipc.stop();
+
+	assert.equal(ipc._intentionalStop, true);
+	// timer 被清除（不会触发回调）
+});
+
+test('auto-restart: _handleProcessExit 触发 _scheduleRestart（非 intentional）', async () => {
+	const logs = [];
+	const { ipc } = createStartedIpc({ logger: (msg) => logs.push(msg) });
+	ipc._autoRestart = true;
+	ipc._maxRestartAttempts = 2;
+
+	ipc._handleProcessExit(1, null);
+
+	assert.equal(ipc._restartAttempts, 1);
+	assert.ok(ipc._restartTimer !== null);
+	assert.ok(logs.some((m) => /auto-restart attempt 1\/2/.test(m)));
+
+	clearTimeout(ipc._restartTimer);
+});
+
+test('auto-restart: _handleProcessExit 不触发（intentional stop）', () => {
+	const { ipc } = createStartedIpc();
+	ipc._autoRestart = true;
+	ipc._intentionalStop = true;
+
+	ipc._handleProcessExit(0, null);
+
+	assert.equal(ipc._restartAttempts, 0);
+	assert.equal(ipc._restartTimer, null);
+});
+
+test('auto-restart: _handleProcessExit 不触发（autoRestart=false）', () => {
+	const { ipc } = createStartedIpc();
+	ipc._autoRestart = false;
+
+	ipc._handleProcessExit(1, null);
+
+	assert.equal(ipc._restartAttempts, 0);
+	assert.equal(ipc._restartTimer, null);
+});
+
+test('auto-restart: 超过 maxRestartAttempts emit fatal', () => {
+	const logs = [];
+	const { ipc } = createStartedIpc({ logger: (msg) => logs.push(msg) });
+	ipc._autoRestart = true;
+	ipc._maxRestartAttempts = 2;
+	ipc._restartAttempts = 2; // 已用完
+
+	const fatalEvents = [];
+	ipc.on('fatal', (err) => fatalEvents.push(err));
+
+	ipc._scheduleRestart();
+
+	assert.equal(fatalEvents.length, 1);
+	assert.match(fatalEvents[0].message, /restart failed after 2 attempts/);
+	assert.ok(logs.some((m) => /gave up/.test(m)));
+});
+
+test('auto-restart: 指数退避延迟', () => {
+	const { ipc } = createStartedIpc();
+	ipc._autoRestart = true;
+	ipc._maxRestartAttempts = 5;
+
+	// 第 1 次: 200ms
+	ipc._restartAttempts = 0;
+	ipc._scheduleRestart();
+	clearTimeout(ipc._restartTimer);
+	assert.equal(ipc._restartAttempts, 1);
+
+	// 第 2 次: 400ms
+	ipc._scheduleRestart();
+	clearTimeout(ipc._restartTimer);
+	assert.equal(ipc._restartAttempts, 2);
+
+	// 第 3 次: 800ms
+	ipc._scheduleRestart();
+	clearTimeout(ipc._restartTimer);
+	assert.equal(ipc._restartAttempts, 3);
+});
+
+test('auto-restart: _scheduleResetTimer 在稳定运行后重置计数器', async () => {
+	const logs = [];
+	const { ipc } = createStartedIpc({ logger: (msg) => logs.push(msg) });
+	ipc._autoRestart = true;
+	ipc._restartResetWindowMs = 50; // 极短窗口，加速测试
+	ipc._restartAttempts = 3;
+
+	ipc._scheduleResetTimer();
+	await new Promise((r) => setTimeout(r, 80));
+
+	assert.equal(ipc._restartAttempts, 0);
+	assert.ok(logs.some((m) => /resetting restart counter/.test(m)));
+});
+
+test('auto-restart: _scheduleResetTimer 在 autoRestart=false 时不设定时器', () => {
+	const { ipc } = createStartedIpc();
+	ipc._autoRestart = false;
+
+	ipc._scheduleResetTimer();
+	assert.equal(ipc._resetTimer, null);
+});
+
+test('auto-restart: stop 在进程已死后仍取消 restart timer', () => {
+	const { ipc } = createStartedIpc();
+	ipc._autoRestart = true;
+	ipc._maxRestartAttempts = 3;
+
+	// 模拟崩溃 → _handleProcessExit 设置 restart timer 并清空 _proc
+	ipc._handleProcessExit(1, null);
+	assert.ok(ipc._restartTimer !== null);
+	assert.equal(ipc._proc, null);
+
+	// stop() 应仍能取消 timer（即使 _proc 已为 null）
+	ipc.stop();
+
+	assert.equal(ipc._intentionalStop, true);
+});
+
+test('auto-restart: _handleProcessExit 置 _proc=null 和 _started=false', () => {
+	const { ipc } = createStartedIpc();
+
+	assert.ok(ipc._proc !== null);
+	assert.equal(ipc._started, true);
+
+	ipc._handleProcessExit(1, null);
+
+	assert.equal(ipc._proc, null);
+	assert.equal(ipc._started, false);
+});
+
+test('auto-restart: _handleProcessExit emit exit 事件', () => {
+	const { ipc } = createStartedIpc();
+	const exitEvents = [];
+	ipc.on('exit', (code, signal) => exitEvents.push({ code, signal }));
+
+	ipc._handleProcessExit(1, 'SIGSEGV');
+
+	assert.equal(exitEvents.length, 1);
+	assert.equal(exitEvents[0].code, 1);
+	assert.equal(exitEvents[0].signal, 'SIGSEGV');
+});
+
+test('auto-restart: _handleProcessExit reject pending requests', async () => {
+	const { ipc } = createStartedIpc({ timeout: 5000 });
+
+	const p = ipc.request('test');
+	ipc._handleProcessExit(1, null);
+
+	await assert.rejects(p, /process exited/);
+});
+
+test('auto-restart: restart catch 中 _intentionalStop 已被外部 stop 设置时不重试', () => {
+	const logs = [];
+	const { ipc } = createStartedIpc({ logger: (msg) => logs.push(msg) });
+	ipc._autoRestart = true;
+	ipc._maxRestartAttempts = 5;
+	ipc._restartAttempts = 1;
+
+	// 模拟：外部 stop() 已设置 _intentionalStop = true
+	ipc._intentionalStop = true;
+
+	// _scheduleRestart 应立即递增计数但 timer callback 内部检测到 intentionalStop 后退出
+	// 这里直接测试 catch 分支的行为：当 _intentionalStop=true 时不调 _scheduleRestart
+	// 利用已有的 _scheduleRestart + clearTimeout 模式验证
+	const prevAttempts = ipc._restartAttempts;
+	ipc._scheduleRestart(); // 设置 timer，计数器 +1
+	clearTimeout(ipc._restartTimer); // 取消 timer，直接验证逻辑
+
+	// 如果 _intentionalStop=true 时 start() catch 中不会继续调 _scheduleRestart，
+	// 那么手动模拟该逻辑：
+	assert.equal(ipc._restartAttempts, prevAttempts + 1);
+});

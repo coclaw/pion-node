@@ -342,6 +342,8 @@ class RTCDataChannel extends EventEmitter {
 			}
 			await new Promise((resolve) => setTimeout(resolve, 10));
 		}
+		// _forceClose() 可能在 drain wait 期间已完成清理和 emit，此时不再重复操作
+		if (this._closed) return;
 		this._closed = true;
 		this._sendQueue.length = 0;
 		this._bufferedAmount = 0;
@@ -352,6 +354,21 @@ class RTCDataChannel extends EventEmitter {
 			pcId: this._pcId,
 			dcLabel: this._label,
 		});
+		this.emit('close');
+	}
+
+	/**
+	 * IPC 进程崩溃时的强制关闭——不发 IPC、不等 drain，直接转 closed。
+	 * 由 RTCPeerConnection 的 exit handler 调用。
+	 */
+	_forceClose() {
+		if (this._closed) return;
+		this._closed = true;
+		this._sendQueue.length = 0;
+		this._bufferedAmount = 0;
+		this._goBufferedBytes = 0;
+		this._detach();
+		this._readyState = 'closed';
 		this.emit('close');
 	}
 

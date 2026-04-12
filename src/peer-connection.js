@@ -110,6 +110,20 @@ class RTCPeerConnection extends EventEmitter {
 			this.emit('signalingstatechange');
 		};
 
+		// IPC 进程退出（崩溃或被杀）→ 所有 PC 变 failed，DC 强关
+		this._onIpcExit = () => {
+			if (this._connState === 'closed' || this._connState === 'failed') return;
+			for (const dc of this._dataChannels) {
+				try { dc._forceClose(); } catch { /* listener 异常不阻断后续 DC 清理 */ }
+			}
+			this._dataChannels.clear();
+			this._detach();
+			this._connState = 'failed';
+			this._iceState = 'failed';
+			this.emit('connectionstatechange');
+			this.emit('iceconnectionstatechange');
+		};
+
 		if (this._ipc) {
 			this._ipc.on('pc.icecandidate', this._onIceCandidate);
 			this._ipc.on('pc.statechange', this._onStateChange);
@@ -117,6 +131,7 @@ class RTCPeerConnection extends EventEmitter {
 			this._ipc.on('pc.selectedcandidatepairchange', this._onSelectedCandidatePairChange);
 			this._ipc.on('pc.icegatheringstatechange', this._onIceGatheringStateChange);
 			this._ipc.on('pc.signalingstatechange', this._onSignalingStateChange);
+			this._ipc.on('exit', this._onIpcExit);
 		}
 
 		// on* property handlers
@@ -292,6 +307,7 @@ class RTCPeerConnection extends EventEmitter {
 		if (!this._ipc) return;
 		await this._ready.catch(() => {});
 		if (this._initError) return; // pc.create failed, nothing to close on Go side
+		if (!this._ipc.started) return; // IPC 进程已死（崩溃或已 stop），无需也无法发 IPC
 		await this._ipc.request('pc.close', { pcId: this._pcId });
 	}
 
@@ -303,6 +319,7 @@ class RTCPeerConnection extends EventEmitter {
 		this._ipc.off('pc.selectedcandidatepairchange', this._onSelectedCandidatePairChange);
 		this._ipc.off('pc.icegatheringstatechange', this._onIceGatheringStateChange);
 		this._ipc.off('pc.signalingstatechange', this._onSignalingStateChange);
+		this._ipc.off('exit', this._onIpcExit);
 	}
 }
 

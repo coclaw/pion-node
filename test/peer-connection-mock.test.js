@@ -634,3 +634,186 @@ test('close is safe when pc.create failed', async () => {
 	await pc.close();
 	assert.equal(pc.connectionState, 'closed');
 });
+
+// --- IPC exit handler (进程崩溃 → PC failed) ---
+
+test('ipc exit: connected PC 转 failed 并 emit connectionstatechange', () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+
+	// 模拟 connected 状态
+	ipc.emit('pc.statechange', {
+		pcId: 'pc-1',
+		payload: Buffer.from(encode({ connState: 'connected', iceState: 'connected' })),
+	});
+	assert.equal(pc.connectionState, 'connected');
+
+	const connEvents = [];
+	const iceEvents = [];
+	pc.on('connectionstatechange', () => connEvents.push(pc.connectionState));
+	pc.on('iceconnectionstatechange', () => iceEvents.push(pc.iceConnectionState));
+
+	// IPC 进程退出
+	ipc.emit('exit', 1, null);
+
+	assert.equal(pc.connectionState, 'failed');
+	assert.equal(pc.iceConnectionState, 'failed');
+	assert.equal(connEvents.length, 1);
+	assert.equal(connEvents[0], 'failed');
+	assert.equal(iceEvents.length, 1);
+	assert.equal(iceEvents[0], 'failed');
+});
+
+test('ipc exit: force-close 所有关联 DC', () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+
+	// 模拟 connected + open DC
+	ipc.emit('pc.statechange', {
+		pcId: 'pc-1',
+		payload: Buffer.from(encode({ connState: 'connected', iceState: 'connected' })),
+	});
+
+	const dc = pc.createDataChannel('rpc');
+	ipc.emit('dc.open', { pcId: 'pc-1', dcLabel: 'rpc' });
+	assert.equal(dc.readyState, 'open');
+
+	const dcCloseEvents = [];
+	dc.on('close', () => dcCloseEvents.push(true));
+
+	// IPC 进程退出
+	ipc.emit('exit', 1, null);
+
+	assert.equal(dc.readyState, 'closed');
+	assert.equal(dc._closed, true);
+	assert.equal(dcCloseEvents.length, 1);
+	assert.equal(pc._dataChannels.size, 0);
+});
+
+test('ipc exit: detach 所有 IPC 事件监听', () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+
+	const iceBefore = ipc.listenerCount('pc.icecandidate');
+	const exitBefore = ipc.listenerCount('exit');
+
+	ipc.emit('exit', 1, null);
+
+	assert.equal(ipc.listenerCount('pc.icecandidate'), iceBefore - 1);
+	assert.equal(ipc.listenerCount('exit'), exitBefore - 1);
+});
+
+test('ipc exit: 已 closed 的 PC 不重复触发', () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+
+	// 先 close
+	pc._connState = 'closed';
+
+	const connEvents = [];
+	pc.on('connectionstatechange', () => connEvents.push(pc.connectionState));
+
+	ipc.emit('exit', 1, null);
+
+	assert.equal(connEvents.length, 0); // 不触发
+});
+
+test('ipc exit: 已 failed 的 PC 不重复触发', () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+
+	pc._connState = 'failed';
+
+	const connEvents = [];
+	pc.on('connectionstatechange', () => connEvents.push(pc.connectionState));
+
+	ipc.emit('exit', 1, null);
+
+	assert.equal(connEvents.length, 0);
+});
+
+test('ipc exit: new 状态的 PC 也能正确转 failed', () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+	assert.equal(pc.connectionState, 'new');
+
+	const connEvents = [];
+	pc.on('connectionstatechange', () => connEvents.push(pc.connectionState));
+
+	ipc.emit('exit', 1, null);
+
+	assert.equal(pc.connectionState, 'failed');
+	assert.equal(connEvents.length, 1);
+});
+
+test('close detaches exit listener', async () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+
+	const exitBefore = ipc.listenerCount('exit');
+	await pc.close();
+	assert.equal(ipc.listenerCount('exit'), exitBefore - 1);
+});
+
+test('ipc exit: 多个 DC（open + connecting）全部 force-close', () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+
+	ipc.emit('pc.statechange', {
+		pcId: 'pc-1',
+		payload: Buffer.from(encode({ connState: 'connected', iceState: 'connected' })),
+	});
+
+	const dc1 = pc.createDataChannel('rpc');
+	const dc2 = pc.createDataChannel('file');
+	ipc.emit('dc.open', { pcId: 'pc-1', dcLabel: 'rpc' });
+	// dc2 保持 connecting 状态
+
+	const closeEvents = [];
+	dc1.on('close', () => closeEvents.push('dc1'));
+	dc2.on('close', () => closeEvents.push('dc2'));
+
+	ipc.emit('exit', 1, null);
+
+	assert.equal(dc1.readyState, 'closed');
+	assert.equal(dc2.readyState, 'closed');
+	assert.deepEqual(closeEvents, ['dc1', 'dc2']);
+	assert.equal(pc._dataChannels.size, 0);
+});
+
+test('ipc exit: DC close listener 抛异常不阻断其他 DC 清理', () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+
+	ipc.emit('pc.statechange', {
+		pcId: 'pc-1',
+		payload: Buffer.from(encode({ connState: 'connected', iceState: 'connected' })),
+	});
+
+	const dc1 = pc.createDataChannel('throws');
+	const dc2 = pc.createDataChannel('normal');
+	ipc.emit('dc.open', { pcId: 'pc-1', dcLabel: 'throws' });
+	ipc.emit('dc.open', { pcId: 'pc-1', dcLabel: 'normal' });
+
+	// dc1 的 close listener 抛异常
+	dc1.on('close', () => { throw new Error('listener boom'); });
+
+	// 不应崩溃，dc2 应仍被关闭
+	ipc.emit('exit', 1, null);
+
+	assert.equal(dc2.readyState, 'closed');
+	assert.equal(pc.connectionState, 'failed');
+});
+
+test('pc.close() 在 IPC 已死时静默完成（不抛 not started）', async () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+	await pc._ready;
+
+	// 模拟 IPC 已死
+	ipc._started = false;
+
+	// close 不应 throw
+	await pc.close();
+	assert.equal(pc.connectionState, 'closed');
+});

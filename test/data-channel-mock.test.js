@@ -1040,3 +1040,119 @@ test('createDataChannel init failure sets readyState to closed', async () => {
 	assert.ok(errors.some((e) => e.message === 'init failed'));
 	assert.equal(closed.length, 1);
 });
+
+// --- _forceClose (IPC 进程崩溃时的强制关闭) ---
+
+test('_forceClose: open DC 立即变 closed 并 emit close', () => {
+	const ipc = createMockIpc();
+	const dc = createOpenDc(ipc);
+
+	const events = [];
+	dc.on('close', () => events.push('close'));
+
+	dc._forceClose();
+
+	assert.equal(dc.readyState, 'closed');
+	assert.equal(dc._closed, true);
+	assert.equal(dc._bufferedAmount, 0);
+	assert.equal(dc._goBufferedBytes, 0);
+	assert.equal(dc._sendQueue.length, 0);
+	assert.equal(events.length, 1);
+});
+
+test('_forceClose: 清空 sendQueue 和 bufferedAmount', () => {
+	const ipc = createMockIpc();
+	// 模拟慢 IPC——阻止 drain 立即完成
+	ipc.request = () => new Promise(() => {});
+	const dc = createOpenDc(ipc);
+
+	dc.send('queued-A');
+	dc.send('queued-B');
+	assert.ok(dc._sendQueue.length > 0 || dc._bufferedAmount > 0);
+
+	dc._forceClose();
+
+	assert.equal(dc._sendQueue.length, 0);
+	assert.equal(dc._bufferedAmount, 0);
+	assert.equal(dc.readyState, 'closed');
+});
+
+test('_forceClose: detach IPC 事件监听', () => {
+	const ipc = createMockIpc();
+	const dc = createOpenDc(ipc);
+
+	const before = ipc.listenerCount('dc.open');
+	dc._forceClose();
+	assert.equal(ipc.listenerCount('dc.open'), before - 1);
+});
+
+test('_forceClose: 已 closed 的 DC 不重复 emit', () => {
+	const ipc = createMockIpc();
+	const dc = createOpenDc(ipc);
+
+	const events = [];
+	dc.on('close', () => events.push('close'));
+
+	dc._forceClose();
+	dc._forceClose(); // 重复调用
+
+	assert.equal(events.length, 1);
+});
+
+test('_forceClose: connecting 状态直接关闭（不发 IPC）', () => {
+	const ipc = createMockIpc();
+	const dc = new RTCDataChannel({ _ipc: ipc, _pcId: 'pc-1', _label: 'rpc' });
+	assert.equal(dc.readyState, 'connecting');
+
+	dc._forceClose();
+
+	assert.equal(dc.readyState, 'closed');
+	assert.equal(dc._closed, true);
+	// 未发送任何 IPC request（只有构造时注册的 listener）
+	assert.equal(ipc.requests.length, 0);
+});
+
+test('_forceClose 后调 close() 不重复 emit 也不发 IPC', async () => {
+	const ipc = createMockIpc();
+	const dc = createOpenDc(ipc);
+
+	const events = [];
+	dc.on('close', () => events.push('close'));
+
+	dc._forceClose();
+	assert.equal(events.length, 1);
+
+	// close() 应因 _closed 守卫直接 return
+	await dc.close();
+	assert.equal(events.length, 1); // 不重复 emit
+	// 不应发 dc.close IPC
+	assert.ok(!ipc.requests.some((r) => r.method === 'dc.close'));
+});
+
+test('close() drain 期间 _forceClose 触发后 close() 静默退出', async () => {
+	const ipc = createMockIpc();
+	// 模拟慢 IPC，使 drain 停留
+	let sendResolve;
+	ipc.request = (method) => {
+		if (method === 'dc.send') {
+			return new Promise((resolve) => { sendResolve = resolve; });
+		}
+		return Promise.resolve({ header: {}, payload: Buffer.alloc(0) });
+	};
+
+	const dc = createOpenDc(ipc);
+	dc.send('data');
+
+	// 启动 close()，它会进入 drain 等待
+	const closePromise = dc.close();
+	await new Promise((r) => setTimeout(r, 20));
+	assert.equal(dc.readyState, 'closing');
+
+	// 模拟 IPC 崩溃——先 reject send，再 forceClose
+	sendResolve({ header: {}, payload: Buffer.alloc(0) });
+	dc._forceClose();
+
+	// close() 应静默完成
+	await closePromise;
+	assert.equal(dc.readyState, 'closed');
+});
