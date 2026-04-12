@@ -39,7 +39,9 @@
 		"lint": "eslint src/ test/",
 		"check": "pnpm lint",
 		"test": "c8 --check-coverage --lines 90 --branches 90 --functions 90 --statements 90 --reporter=text --reporter=lcov node --test test/*.test.js",
-		"verify": "pnpm check && pnpm test"
+		"verify": "pnpm check && pnpm test",
+		"release": "bash ./scripts/release.sh",
+		"release:check": "bash ./scripts/release-check.sh"
 	},
 	"optionalDependencies": {
 		"@coclaw/pion-ipc-linux-x64": "0.1.0",
