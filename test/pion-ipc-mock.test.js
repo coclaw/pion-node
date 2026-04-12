@@ -367,15 +367,19 @@ test('watchdog: _handleProcessExit triggers _scheduleRestart (non-intentional)',
 	clearTimeout(ipc._restartTimer);
 });
 
-test('watchdog: _handleProcessExit skipped on intentional stop', () => {
+test('watchdog: _handleProcessExit skipped on intentional stop (no exit event, no restart)', () => {
 	const { ipc } = createStartedIpc();
 	ipc._autoRestart = true;
 	ipc._intentionalStop = true;
+
+	const exitEvents = [];
+	ipc.on('exit', () => exitEvents.push(true));
 
 	ipc._handleProcessExit(0, null);
 
 	assert.equal(ipc._restartAttempts, 0);
 	assert.equal(ipc._restartTimer, null);
+	assert.equal(exitEvents.length, 0);
 });
 
 test('watchdog: _handleProcessExit skipped when autoRestart=false', () => {

@@ -311,10 +311,14 @@ class PionIpc extends EventEmitter {
 		this._proc = null;
 		this._started = false;
 		clearTimeout(this._resetTimer);
-		this.emit('exit', code, signal);
 
-		if (!this._intentionalStop && this._autoRestart) {
-			this._scheduleRestart();
+		// intentional stop/abort 时不 emit 'exit'：
+		// 消费者（RTCPeerConnection）此时要么已 closed，要么尚未创建。
+		if (!this._intentionalStop) {
+			this.emit('exit', code, signal);
+			if (this._autoRestart) {
+				this._scheduleRestart();
+			}
 		}
 	}
 
