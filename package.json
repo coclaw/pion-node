@@ -1,20 +1,51 @@
 {
-	"name": "pion-node",
+	"name": "@coclaw/pion-node",
 	"version": "0.1.0",
 	"type": "module",
+	"description": "Node.js SDK for pion-ipc — W3C-style PeerConnection/DataChannel API over a Go WebRTC sidecar",
+	"license": "Apache-2.0",
+	"author": "CoClaw <https://coclaw.net>",
+	"homepage": "https://github.com/coclaw/pion-node",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/coclaw/pion-node.git"
+	},
+	"bugs": {
+		"url": "https://github.com/coclaw/pion-node/issues"
+	},
+	"keywords": [
+		"webrtc",
+		"pion",
+		"datachannel",
+		"ipc",
+		"peer-connection",
+		"w3c"
+	],
 	"exports": "./src/index.js",
 	"engines": {
 		"node": ">=18"
 	},
+	"publishConfig": {
+		"access": "public",
+		"registry": "https://registry.npmjs.org/"
+	},
+	"files": [
+		"src/**/*.js",
+		"!src/**/*.test.js",
+		"LICENSE",
+		"README.md"
+	],
 	"scripts": {
-		"test": "node --test test/*.test.js",
-		"lint": "eslint src/ test/"
+		"lint": "eslint src/ test/",
+		"check": "pnpm lint",
+		"test": "c8 --reporter=text --reporter=lcov node --test test/*.test.js",
+		"verify": "pnpm check && pnpm test"
 	},
 	"dependencies": {
 		"@msgpack/msgpack": "^3.0.0"
 	},
 	"devDependencies": {
+		"c8": "^10.1.3",
 		"eslint": "^9.0.0"
-	},
-	"license": "Apache-2.0"
+	}
 }

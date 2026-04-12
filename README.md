@@ -1,11 +1,11 @@
 # pion-node
 
-Node.js SDK for [pion-ipc](https://github.com/nicosmd/pion-ipc) -- spawn and manage a Go-based WebRTC process via stdin/stdout binary IPC, exposing a W3C-style PeerConnection/DataChannel API.
+Node.js SDK for [pion-ipc](https://github.com/coclaw/pion-ipc) — spawn and manage a Go-based WebRTC process via stdin/stdout binary IPC, exposing a W3C-style PeerConnection/DataChannel API.
 
 ## Install
 
 ```bash
-npm install pion-node
+npm install @coclaw/pion-node
 ```
 
 You also need the `pion-ipc` Go binary. Either:
@@ -98,7 +98,7 @@ Max frame size: 16 MiB.
 - Events: `'open'`, `'close'`, `'message'`, `'error'`, `'bufferedamountlow'`
 - `on*` property handlers for all events
 
-**Note on `bufferedAmount`**: The getter returns the JS-side send queue size, not the Go-side SCTP buffer. For precise flow control (e.g., file transfer), use `dc.getBA` IPC request via `PionIpc.request()` to query the Go-side value.
+**Note on `bufferedAmount`**: Returns the sum of JS-side send queue size and Go-side SCTP buffer (dual-source tracking). The Go-side value is updated from each `dc.send` ack and refreshed on `bufferedamountlow` events, providing accurate flow control without manual queries.
 
 ## License
 

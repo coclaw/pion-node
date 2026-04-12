@@ -178,9 +178,9 @@ class RTCPeerConnection extends EventEmitter {
 	}
 
 	/**
-	 * W3C RTCSctpTransport.maxMessageSize 的简化暴露。
-	 * Pion SCTP 层出站限制硬编码 65536（pion/webrtc#758），此处如实报告。
-	 * 调用方应以 min(remoteMaxMessageSize, pc.maxMessageSize) 作为分片阈值。
+	 * Simplified W3C RTCSctpTransport.maxMessageSize.
+	 * Pion SCTP outbound limit is hardcoded to 65536 (pion/webrtc#758).
+	 * Callers should use min(remoteMaxMessageSize, pc.maxMessageSize) as the chunking threshold.
 	 */
 	get maxMessageSize() {
 		return 65536;

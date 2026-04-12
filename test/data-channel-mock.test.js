@@ -185,9 +185,9 @@ test('bufferedamountlow fires after drain when below threshold', async () => {
 	assert.ok(events.length >= 1);
 });
 
-// === R 方案：bufferedAmount 由 send ack 推送式更新（非 lazy refresh）===
+// === R-scheme: bufferedAmount updated by send ack push (not lazy refresh) ===
 
-test('R 方案: drain ack 携带的 Go-side BA 立即刷新缓存', async () => {
+test('R-scheme: drain ack with Go-side BA refreshes cache immediately', async () => {
 	const { encode } = await import('@msgpack/msgpack');
 	const ipc = createMockIpc();
 	// mock: dc.send 返回带 bufferedAmount 字段的 ack（模拟 pion-go 改造后的行为）
@@ -214,7 +214,7 @@ test('R 方案: drain ack 携带的 Go-side BA 立即刷新缓存', async () => 
 	assert.equal(dc.bufferedAmount, 1024 * 1024);
 });
 
-test('R 方案: ack payload 缺失或非法时保留旧缓存（不崩溃）', async () => {
+test('R-scheme: missing or invalid ack payload retains old cache (no crash)', async () => {
 	const { encode } = await import('@msgpack/msgpack');
 	const ipc = createMockIpc();
 	let callCount = 0;
@@ -247,7 +247,7 @@ test('R 方案: ack payload 缺失或非法时保留旧缓存（不崩溃）', a
 	assert.equal(dc._goBufferedBytes, 500, '非法 payload 应保留旧缓存');
 });
 
-test('R 方案: ack 中负值或非有限数被忽略（防御性）', async () => {
+test('R-scheme: negative or non-finite values in ack are ignored (defensive)', async () => {
 	const { encode } = await import('@msgpack/msgpack');
 	const ipc = createMockIpc();
 	let callCount = 0;
@@ -277,7 +277,7 @@ test('R 方案: ack 中负值或非有限数被忽略（防御性）', async () 
 	assert.equal(dc._goBufferedBytes, 1000, '缺字段（NaN）应被忽略');
 });
 
-test('R 方案: bufferedAmount getter — connecting 返回 0, closing/open 返回 sum', () => {
+test('R-scheme: bufferedAmount getter returns 0 in connecting, sum in closing/open', () => {
 	const ipc = createMockIpc();
 	const dc = new RTCDataChannel({ _ipc: ipc, _pcId: 'pc-1', _label: 'rpc' });
 	// 注入 cache 模拟"曾经发过"的情况
@@ -297,7 +297,7 @@ test('R 方案: bufferedAmount getter — connecting 返回 0, closing/open 返�
 	assert.equal(dc.bufferedAmount, 99999 + 12345);
 });
 
-test('R 方案: close() 之后 getter 返回 0 (cache 已清零)', async () => {
+test('R-scheme: getter returns 0 after close() (cache cleared)', async () => {
 	const ipc = createMockIpc();
 	const dc = createOpenDc(ipc);
 	// 模拟有 cache 残留
@@ -313,7 +313,7 @@ test('R 方案: close() 之后 getter 返回 0 (cache 已清零)', async () => {
 	assert.equal(dc._bufferedAmount, 0);
 });
 
-test('R 方案: bal IPC 后 _refreshGoBA 从 dc.getBA 刷新 _goBufferedBytes', async () => {
+test('R-scheme: _refreshGoBA updates _goBufferedBytes from dc.getBA after bal IPC', async () => {
 	const { encode } = await import('@msgpack/msgpack');
 	const ipc = createMockIpc();
 	const origReq = ipc.request;
@@ -336,7 +336,7 @@ test('R 方案: bal IPC 后 _refreshGoBA 从 dc.getBA 刷新 _goBufferedBytes', 
 	assert.equal(events.length, 1, 'event emitted');
 });
 
-test('R 方案: _refreshGoBA dc.getBA 失败时仍 emit bufferedamountlow（旧行为回退）', async () => {
+test('R-scheme: _refreshGoBA still emits bufferedamountlow on dc.getBA failure (fallback)', async () => {
 	const ipc = createMockIpc();
 	const origReq = ipc.request;
 	ipc.request = async (method, opts, payload) => {
@@ -358,7 +358,7 @@ test('R 方案: _refreshGoBA dc.getBA 失败时仍 emit bufferedamountlow（旧�
 	assert.equal(events.length, 1, 'event emitted despite IPC failure');
 });
 
-test('R 方案: _refreshGoBA 在 close 后不调 dc.getBA', async () => {
+test('R-scheme: _refreshGoBA does not call dc.getBA after close', async () => {
 	const ipc = createMockIpc();
 	const dc = createOpenDc(ipc);
 	await dc.close();
@@ -372,7 +372,7 @@ test('R 方案: _refreshGoBA 在 close 后不调 dc.getBA', async () => {
 	assert.equal(getBAReqs.length, 0, 'close 后不应发 dc.getBA');
 });
 
-test('R 方案: _refreshGoBA close 期间 in-flight dc.getBA 不更新缓存也不 emit', async () => {
+test('R-scheme: in-flight dc.getBA during close does not update cache or emit', async () => {
 	const { encode } = await import('@msgpack/msgpack');
 	let resolveGetBA;
 	const ipc = createMockIpc();
@@ -405,7 +405,7 @@ test('R 方案: _refreshGoBA close 期间 in-flight dc.getBA 不更新缓存也�
 	assert.equal(events.length, 0, 'post-close 不应 emit bufferedamountlow');
 });
 
-test('R 方案: threshold-cross 检测使用 sum (JS+Go)，避免 JS 队列空但 Go 仍满时虚假早醒', async () => {
+test('R-scheme: threshold-cross check uses sum (JS+Go) to avoid false wakeup when JS queue empty but Go still full', async () => {
 	const { encode } = await import('@msgpack/msgpack');
 	const ipc = createMockIpc();
 	// mock: 每次 send ack 都报告 Go 端有 100KB buffered
@@ -432,7 +432,7 @@ test('R 方案: threshold-cross 检测使用 sum (JS+Go)，避免 JS 队列空�
 	assert.equal(events.length, 0, 'sum 始终高于 threshold，不应虚假早醒');
 });
 
-test('R 方案 (regression A4): close 期间 in-flight ack 不会复活 cache 或 emit', async () => {
+test('R-scheme (regression A4): in-flight ack during close does not revive cache or emit', async () => {
 	// 关键回归：close() 强制清零后，drain loop 内的 await ipc.request 可能还在 pending，
 	// 当 ack 回来时，drain 必须重新检查 _closed，否则会用 ack 中的 BA 复活 _goBufferedBytes，
 	// 并可能错误 emit bufferedamountlow（post-close 事件不合规）。
@@ -476,7 +476,7 @@ test('R 方案 (regression A4): close 期间 in-flight ack 不会复活 cache �
 	assert.equal(events.length, 0, 'post-close 不应 emit bufferedamountlow');
 });
 
-test('R 方案 (regression A1): Go-side BA 在 ack 中跨过 threshold 时正确 emit bufferedamountlow', async () => {
+test('R-scheme (regression A1): Go-side BA crossing threshold in ack correctly emits bufferedamountlow', async () => {
 	// 关键回归：threshold-cross 检测必须使用 ack 之前的 prevTotal，
 	// 否则当 ack 携带的新 BA 大幅低于阈值时，会被错误地用作 prev → 不 emit。
 	// 场景：cache 200，threshold 100，ack 报告 60（Go 端在 send 期间已 drain），send 1 字节
@@ -504,7 +504,7 @@ test('R 方案 (regression A1): Go-side BA 在 ack 中跨过 threshold 时正确
 	assert.equal(events.length, 1, 'cache 200→60 跨过 threshold 100，必须 emit');
 });
 
-test('R 方案: drain 完成且 sum 跨过 threshold 时正常 emit bufferedamountlow', async () => {
+test('R-scheme: emits bufferedamountlow when drain completes and sum crosses threshold', async () => {
 	const { encode } = await import('@msgpack/msgpack');
 	const ipc = createMockIpc();
 	// mock: send ack 报告 Go 端 0 buffered
@@ -528,7 +528,7 @@ test('R 方案: drain 完成且 sum 跨过 threshold 时正常 emit bufferedamou
 	assert.equal(events.length, 1, 'sum 跨过 threshold 应触发');
 });
 
-test('close graceful: 等待 sendQueue 排空后再关闭（最后一条消息不丢且顺序正确）', async () => {
+test('close graceful: waits for sendQueue to drain before closing (no message loss, correct order)', async () => {
 	const sentPayloads = [];
 	const ipc = createMockIpc();
 	// 慢 IPC：每次 dc.send 延迟 20ms，模拟 in-flight 消息
@@ -553,7 +553,7 @@ test('close graceful: 等待 sendQueue 排空后再关闭（最后一条消息�
 	assert.equal(dc.readyState, 'closed');
 });
 
-test('close graceful: 超时后丢弃残余消息并强关（注入短超时）', async () => {
+test('close graceful: discards remaining messages and force-closes on timeout', async () => {
 	const logs = [];
 	const ipc = createMockIpc();
 	ipc._log = (msg) => logs.push(msg);
@@ -718,7 +718,7 @@ test('dc.bufferedamountlow event fires after dc.getBA refresh', async () => {
 	assert.equal(fired, true);
 });
 
-test('R 方案: dc.bufferedamountlow 在 connecting/closed 状态被丢弃', async () => {
+test('R-scheme: dc.bufferedamountlow is discarded in connecting/closed state', async () => {
 	const ipc = createMockIpc();
 	const dc = new RTCDataChannel({ _ipc: ipc, _pcId: 'pc-1', _label: 'rpc' });
 
@@ -1043,7 +1043,7 @@ test('createDataChannel init failure sets readyState to closed', async () => {
 
 // --- _forceClose (IPC 进程崩溃时的强制关闭) ---
 
-test('_forceClose: open DC 立即变 closed 并 emit close', () => {
+test('_forceClose: open DC immediately transitions to closed and emits close', () => {
 	const ipc = createMockIpc();
 	const dc = createOpenDc(ipc);
 
@@ -1060,7 +1060,7 @@ test('_forceClose: open DC 立即变 closed 并 emit close', () => {
 	assert.equal(events.length, 1);
 });
 
-test('_forceClose: 清空 sendQueue 和 bufferedAmount', () => {
+test('_forceClose: clears sendQueue and bufferedAmount', () => {
 	const ipc = createMockIpc();
 	// 模拟慢 IPC——阻止 drain 立即完成
 	ipc.request = () => new Promise(() => {});
@@ -1077,7 +1077,7 @@ test('_forceClose: 清空 sendQueue 和 bufferedAmount', () => {
 	assert.equal(dc.readyState, 'closed');
 });
 
-test('_forceClose: detach IPC 事件监听', () => {
+test('_forceClose: detaches IPC event listeners', () => {
 	const ipc = createMockIpc();
 	const dc = createOpenDc(ipc);
 
@@ -1086,7 +1086,7 @@ test('_forceClose: detach IPC 事件监听', () => {
 	assert.equal(ipc.listenerCount('dc.open'), before - 1);
 });
 
-test('_forceClose: 已 closed 的 DC 不重复 emit', () => {
+test('_forceClose: already closed DC does not re-emit', () => {
 	const ipc = createMockIpc();
 	const dc = createOpenDc(ipc);
 
@@ -1099,7 +1099,7 @@ test('_forceClose: 已 closed 的 DC 不重复 emit', () => {
 	assert.equal(events.length, 1);
 });
 
-test('_forceClose: connecting 状态直接关闭（不发 IPC）', () => {
+test('_forceClose: connecting state closes directly (no IPC sent)', () => {
 	const ipc = createMockIpc();
 	const dc = new RTCDataChannel({ _ipc: ipc, _pcId: 'pc-1', _label: 'rpc' });
 	assert.equal(dc.readyState, 'connecting');
@@ -1112,7 +1112,7 @@ test('_forceClose: connecting 状态直接关闭（不发 IPC）', () => {
 	assert.equal(ipc.requests.length, 0);
 });
 
-test('_forceClose 后调 close() 不重复 emit 也不发 IPC', async () => {
+test('_forceClose then close() does not re-emit or send IPC', async () => {
 	const ipc = createMockIpc();
 	const dc = createOpenDc(ipc);
 
@@ -1129,7 +1129,7 @@ test('_forceClose 后调 close() 不重复 emit 也不发 IPC', async () => {
 	assert.ok(!ipc.requests.some((r) => r.method === 'dc.close'));
 });
 
-test('close() drain 期间 _forceClose 触发后 close() 静默退出', async () => {
+test('close() exits silently after _forceClose triggers during drain', async () => {
 	const ipc = createMockIpc();
 	// 模拟慢 IPC，使 drain 停留
 	let sendResolve;

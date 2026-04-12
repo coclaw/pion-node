@@ -15,9 +15,9 @@ const RESTART_BASE_DELAY_MS = 200;
  * and event emission.
  *
  * Events: 'exit', 'error', 'restart', 'fatal'
- * - 'exit' (code, signal)：进程退出（崩溃或 stop）
- * - 'restart'：autoRestart 成功重启后
- * - 'fatal'：autoRestart 放弃（达到最大重试次数）
+ * - 'exit' (code, signal): process exited (crash or stop)
+ * - 'restart': auto-restart succeeded
+ * - 'fatal': auto-restart gave up (max attempts reached)
  */
 class PionIpc extends EventEmitter {
 	/**
@@ -25,9 +25,9 @@ class PionIpc extends EventEmitter {
 	 * @param {string} [opts.binPath] - Path to pion-ipc binary (overrides auto-detection)
 	 * @param {Function} [opts.logger] - Logging function (receives string)
 	 * @param {number} [opts.timeout] - Default request timeout in ms
-	 * @param {boolean} [opts.autoRestart] - 进程崩溃后自动重启（默认 false）
-	 * @param {number} [opts.maxRestartAttempts] - 窗口内最大重试次数（默认 5）
-	 * @param {number} [opts.restartResetWindowMs] - 稳定运行多久后重置计数器（默认 60s）
+	 * @param {boolean} [opts.autoRestart] - Auto-restart on crash (default false)
+	 * @param {number} [opts.maxRestartAttempts] - Max restart attempts within window (default 5)
+	 * @param {number} [opts.restartResetWindowMs] - Stable uptime before resetting attempt counter (default 60s)
 	 */
 	constructor(opts = {}) {
 		super();
@@ -259,9 +259,7 @@ class PionIpc extends EventEmitter {
 	}
 
 	/**
-	 * 安全 emit：仅在有 listener 时 emit 且吞 listener 异常。
-	 * 与 RTCDataChannel.__safeEmit 同语义，避免 EventEmitter 默认行为
-	 * 在没有应用层注册时杀掉宿主进程。
+	 * Safe emit: only emits when listeners exist, swallows listener exceptions.
 	 */
 	__safeEmit(event, ...args) {
 		if (this.listenerCount(event) === 0) return;
@@ -274,8 +272,7 @@ class PionIpc extends EventEmitter {
 	}
 
 	/**
-	 * 子进程退出统一入口——reject pending、清引用、emit exit、触发 auto-restart。
-	 * 由 start() 注册的 proc.on('exit') 调用。
+	 * Unified process exit handler — rejects pending requests, clears refs, emits exit, triggers auto-restart.
 	 */
 	_handleProcessExit(code, signal) {
 		this._log(`process exited code=${code} signal=${signal}`);
@@ -291,7 +288,7 @@ class PionIpc extends EventEmitter {
 	}
 
 	/**
-	 * 崩溃后自动重启：指数退避，超过最大次数 emit 'fatal' 放弃。
+	 * Auto-restart after crash: exponential backoff, emits 'fatal' when max attempts exceeded.
 	 */
 	_scheduleRestart() {
 		this._restartAttempts++;
@@ -322,7 +319,7 @@ class PionIpc extends EventEmitter {
 	}
 
 	/**
-	 * 稳定运行窗口定时器：进程存活超过 resetWindow 后重置重试计数器。
+	 * Stability window timer: resets the restart counter after the process has been alive for resetWindow ms.
 	 */
 	_scheduleResetTimer() {
 		clearTimeout(this._resetTimer);

@@ -314,7 +314,7 @@ test('PionIpc.__safeEmit error path: no crash without listener', () => {
 
 // --- auto-restart ---
 
-test('auto-restart: 构造函数默认值', () => {
+test('auto-restart: constructor defaults', () => {
 	const ipc = new PionIpc();
 	assert.equal(ipc._autoRestart, false);
 	assert.equal(ipc._maxRestartAttempts, 5);
@@ -323,7 +323,7 @@ test('auto-restart: 构造函数默认值', () => {
 	assert.equal(ipc._restartAttempts, 0);
 });
 
-test('auto-restart: 构造函数接受自定义值', () => {
+test('auto-restart: constructor accepts custom values', () => {
 	const ipc = new PionIpc({
 		autoRestart: true,
 		maxRestartAttempts: 3,
@@ -334,7 +334,7 @@ test('auto-restart: 构造函数接受自定义值', () => {
 	assert.equal(ipc._restartResetWindowMs, 5000);
 });
 
-test('auto-restart: stop 设置 _intentionalStop 并清除 timer', () => {
+test('auto-restart: stop sets _intentionalStop and clears timers', () => {
 	const { ipc } = createStartedIpc();
 	ipc._autoRestart = true;
 	ipc._restartTimer = setTimeout(() => {}, 99999);
@@ -349,7 +349,7 @@ test('auto-restart: stop 设置 _intentionalStop 并清除 timer', () => {
 	// timer 被清除（不会触发回调）
 });
 
-test('auto-restart: _handleProcessExit 触发 _scheduleRestart（非 intentional）', async () => {
+test('auto-restart: _handleProcessExit triggers _scheduleRestart (non-intentional)', async () => {
 	const logs = [];
 	const { ipc } = createStartedIpc({ logger: (msg) => logs.push(msg) });
 	ipc._autoRestart = true;
@@ -364,7 +364,7 @@ test('auto-restart: _handleProcessExit 触发 _scheduleRestart（非 intentional
 	clearTimeout(ipc._restartTimer);
 });
 
-test('auto-restart: _handleProcessExit 不触发（intentional stop）', () => {
+test('auto-restart: _handleProcessExit skipped on intentional stop', () => {
 	const { ipc } = createStartedIpc();
 	ipc._autoRestart = true;
 	ipc._intentionalStop = true;
@@ -375,7 +375,7 @@ test('auto-restart: _handleProcessExit 不触发（intentional stop）', () => {
 	assert.equal(ipc._restartTimer, null);
 });
 
-test('auto-restart: _handleProcessExit 不触发（autoRestart=false）', () => {
+test('auto-restart: _handleProcessExit skipped when autoRestart=false', () => {
 	const { ipc } = createStartedIpc();
 	ipc._autoRestart = false;
 
@@ -385,7 +385,7 @@ test('auto-restart: _handleProcessExit 不触发（autoRestart=false）', () => 
 	assert.equal(ipc._restartTimer, null);
 });
 
-test('auto-restart: 超过 maxRestartAttempts emit fatal', () => {
+test('auto-restart: exceeding maxRestartAttempts emits fatal', () => {
 	const logs = [];
 	const { ipc } = createStartedIpc({ logger: (msg) => logs.push(msg) });
 	ipc._autoRestart = true;
@@ -402,7 +402,7 @@ test('auto-restart: 超过 maxRestartAttempts emit fatal', () => {
 	assert.ok(logs.some((m) => /gave up/.test(m)));
 });
 
-test('auto-restart: 指数退避延迟', () => {
+test('auto-restart: exponential backoff delay', () => {
 	const { ipc } = createStartedIpc();
 	ipc._autoRestart = true;
 	ipc._maxRestartAttempts = 5;
@@ -424,7 +424,7 @@ test('auto-restart: 指数退避延迟', () => {
 	assert.equal(ipc._restartAttempts, 3);
 });
 
-test('auto-restart: _scheduleResetTimer 在稳定运行后重置计数器', async () => {
+test('auto-restart: _scheduleResetTimer resets counter after stable run', async () => {
 	const logs = [];
 	const { ipc } = createStartedIpc({ logger: (msg) => logs.push(msg) });
 	ipc._autoRestart = true;
@@ -438,7 +438,7 @@ test('auto-restart: _scheduleResetTimer 在稳定运行后重置计数器', asyn
 	assert.ok(logs.some((m) => /resetting restart counter/.test(m)));
 });
 
-test('auto-restart: _scheduleResetTimer 在 autoRestart=false 时不设定时器', () => {
+test('auto-restart: _scheduleResetTimer skips timer when autoRestart=false', () => {
 	const { ipc } = createStartedIpc();
 	ipc._autoRestart = false;
 
@@ -446,7 +446,7 @@ test('auto-restart: _scheduleResetTimer 在 autoRestart=false 时不设定时器
 	assert.equal(ipc._resetTimer, null);
 });
 
-test('auto-restart: stop 在进程已死后仍取消 restart timer', () => {
+test('auto-restart: stop cancels restart timer even after process death', () => {
 	const { ipc } = createStartedIpc();
 	ipc._autoRestart = true;
 	ipc._maxRestartAttempts = 3;
@@ -462,7 +462,7 @@ test('auto-restart: stop 在进程已死后仍取消 restart timer', () => {
 	assert.equal(ipc._intentionalStop, true);
 });
 
-test('auto-restart: _handleProcessExit 置 _proc=null 和 _started=false', () => {
+test('auto-restart: _handleProcessExit sets _proc=null and _started=false', () => {
 	const { ipc } = createStartedIpc();
 
 	assert.ok(ipc._proc !== null);
@@ -474,7 +474,7 @@ test('auto-restart: _handleProcessExit 置 _proc=null 和 _started=false', () =>
 	assert.equal(ipc._started, false);
 });
 
-test('auto-restart: _handleProcessExit emit exit 事件', () => {
+test('auto-restart: _handleProcessExit emits exit event', () => {
 	const { ipc } = createStartedIpc();
 	const exitEvents = [];
 	ipc.on('exit', (code, signal) => exitEvents.push({ code, signal }));
@@ -486,7 +486,7 @@ test('auto-restart: _handleProcessExit emit exit 事件', () => {
 	assert.equal(exitEvents[0].signal, 'SIGSEGV');
 });
 
-test('auto-restart: _handleProcessExit reject pending requests', async () => {
+test('auto-restart: _handleProcessExit rejects pending requests', async () => {
 	const { ipc } = createStartedIpc({ timeout: 5000 });
 
 	const p = ipc.request('test');
@@ -495,7 +495,7 @@ test('auto-restart: _handleProcessExit reject pending requests', async () => {
 	await assert.rejects(p, /process exited/);
 });
 
-test('auto-restart: restart catch 中 _intentionalStop 已被外部 stop 设置时不重试', () => {
+test('auto-restart: restart catch skips retry when _intentionalStop set by external stop', () => {
 	const logs = [];
 	const { ipc } = createStartedIpc({ logger: (msg) => logs.push(msg) });
 	ipc._autoRestart = true;

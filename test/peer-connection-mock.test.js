@@ -322,7 +322,7 @@ test('on* property setters work', () => {
 	assert.equal(calls.length, 2); // no new calls
 });
 
-test('pc.close graceful: 子 DC 的 sendQueue 排空后才真正关闭（最后一条消息不丢）', async () => {
+test('pc.close graceful: waits for child DC sendQueue to drain before closing', async () => {
 	const sentPayloads = [];
 	const ipc = createMockIpc();
 	ipc.request = async (method, opts, payload) => {
@@ -637,7 +637,7 @@ test('close is safe when pc.create failed', async () => {
 
 // --- IPC exit handler (进程崩溃 → PC failed) ---
 
-test('ipc exit: connected PC 转 failed 并 emit connectionstatechange', () => {
+test('ipc exit: connected PC transitions to failed and emits connectionstatechange', () => {
 	const ipc = createMockIpc();
 	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
 
@@ -664,7 +664,7 @@ test('ipc exit: connected PC 转 failed 并 emit connectionstatechange', () => {
 	assert.equal(iceEvents[0], 'failed');
 });
 
-test('ipc exit: force-close 所有关联 DC', () => {
+test('ipc exit: force-closes all associated DCs', () => {
 	const ipc = createMockIpc();
 	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
 
@@ -690,8 +690,9 @@ test('ipc exit: force-close 所有关联 DC', () => {
 	assert.equal(pc._dataChannels.size, 0);
 });
 
-test('ipc exit: detach 所有 IPC 事件监听', () => {
+test('ipc exit: detaches all IPC event listeners', () => {
 	const ipc = createMockIpc();
+	// eslint-disable-next-line no-unused-vars
 	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
 
 	const iceBefore = ipc.listenerCount('pc.icecandidate');
@@ -703,7 +704,7 @@ test('ipc exit: detach 所有 IPC 事件监听', () => {
 	assert.equal(ipc.listenerCount('exit'), exitBefore - 1);
 });
 
-test('ipc exit: 已 closed 的 PC 不重复触发', () => {
+test('ipc exit: already closed PC does not re-trigger', () => {
 	const ipc = createMockIpc();
 	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
 
@@ -718,7 +719,7 @@ test('ipc exit: 已 closed 的 PC 不重复触发', () => {
 	assert.equal(connEvents.length, 0); // 不触发
 });
 
-test('ipc exit: 已 failed 的 PC 不重复触发', () => {
+test('ipc exit: already failed PC does not re-trigger', () => {
 	const ipc = createMockIpc();
 	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
 
@@ -732,7 +733,7 @@ test('ipc exit: 已 failed 的 PC 不重复触发', () => {
 	assert.equal(connEvents.length, 0);
 });
 
-test('ipc exit: new 状态的 PC 也能正确转 failed', () => {
+test('ipc exit: PC in new state correctly transitions to failed', () => {
 	const ipc = createMockIpc();
 	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
 	assert.equal(pc.connectionState, 'new');
@@ -755,7 +756,7 @@ test('close detaches exit listener', async () => {
 	assert.equal(ipc.listenerCount('exit'), exitBefore - 1);
 });
 
-test('ipc exit: 多个 DC（open + connecting）全部 force-close', () => {
+test('ipc exit: multiple DCs (open + connecting) all force-closed', () => {
 	const ipc = createMockIpc();
 	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
 
@@ -781,7 +782,7 @@ test('ipc exit: 多个 DC（open + connecting）全部 force-close', () => {
 	assert.equal(pc._dataChannels.size, 0);
 });
 
-test('ipc exit: DC close listener 抛异常不阻断其他 DC 清理', () => {
+test('ipc exit: DC close listener exception does not block other DC cleanup', () => {
 	const ipc = createMockIpc();
 	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
 
@@ -805,7 +806,7 @@ test('ipc exit: DC close listener 抛异常不阻断其他 DC 清理', () => {
 	assert.equal(pc.connectionState, 'failed');
 });
 
-test('pc.close() 在 IPC 已死时静默完成（不抛 not started）', async () => {
+test('pc.close() completes silently when IPC is dead (no not-started throw)', async () => {
 	const ipc = createMockIpc();
 	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
 	await pc._ready;

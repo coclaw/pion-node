@@ -17,7 +17,7 @@ class FrameWriter {
 	 * Write a frame to the stream.
 	 * @param {object} header - Message header
 	 * @param {Buffer|Uint8Array} [payload] - Raw payload bytes
-	 * @returns {boolean} stream.write 返回值
+	 * @returns {boolean} stream.write return value
 	 */
 	write(header, payload) {
 		if (this._error) throw this._error;

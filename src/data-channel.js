@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { decode } from '@msgpack/msgpack';
 
-/** close() 等待 sendQueue 排空的默认最大时长（毫秒）；超时后丢弃残余 */
+/** Default max duration (ms) for close() to wait for sendQueue to drain; residual messages are discarded on timeout */
 const DEFAULT_CLOSE_DRAIN_TIMEOUT_MS = 5000;
 
 /**
@@ -110,19 +110,12 @@ class RTCDataChannel extends EventEmitter {
 	}
 
 	/**
-	 * W3C bufferedAmount。
+	 * W3C bufferedAmount (dual-source tracking).
 	 *
-	 * 返回 (JS-side `_bufferedAmount`) + (Go-side SCTP BufferedAmount 缓存)。
-	 *
-	 * **R 方案**：
-	 * - `_bufferedAmount` 由 `send()` 同步增加、drain loop 同步减少
-	 * - `_goBufferedBytes` 由 drain loop 在收到 send IPC ack 时从 ack.payload 解析更新
-	 * - 因此 getter 在 send 完成后**立即**反映 Go-side 的真实状态
-	 *
-	 * **W3C 语义守卫**：
-	 * - `connecting`：还没发过任何东西，返回 0
-	 * - `closing`：仍在 graceful drain，残余字节真实存在，返回完整 sum
-	 * - `closed`：已强制清零，sum 即为 0；返回值与计算一致
+	 * Returns `_bufferedAmount` (JS-side queue) + `_goBufferedBytes` (Go-side SCTP cache).
+	 * - `_bufferedAmount`: incremented synchronously by send(), decremented by drain loop after IPC ack.
+	 * - `_goBufferedBytes`: updated from dc.send ack payload (primary) and dc.getBA on bal (supplementary).
+	 * - `connecting`: returns 0. `closing`: returns real residual. `closed`: already zeroed.
 	 */
 	get bufferedAmount() {
 		if (this._readyState === 'connecting') return 0;
@@ -241,11 +234,10 @@ class RTCDataChannel extends EventEmitter {
 	}
 
 	/**
-	 * 上报 DataChannel 错误：始终通过 ipc logger 记录（保证诊断可见），
-	 * 仅在有 'error' listener 时 emit；listener 抛异常时同样吞并记录，
-	 * 永不让本方法抛出（避免污染调用方的 try/catch 链路）。
+	 * Report a DataChannel error: always logs via ipc logger, emits 'error' only if listeners exist.
+	 * Never throws — swallows listener exceptions to protect the caller's control flow.
 	 * @param {Error} err
-	 * @param {string} context - 触发位置标签（send/drain/setBALT/remote-error 等）
+	 * @param {string} context - origin label (send/drain/setBALT/remote-error etc.)
 	 */
 	__reportError(err, context) {
 		const msg = err?.message ?? String(err);
@@ -259,9 +251,7 @@ class RTCDataChannel extends EventEmitter {
 	}
 
 	/**
-	 * 安全 emit：仅在有 listener 时 emit，且吞掉 listener 同步抛出的异常。
-	 * 用于所有"非致命事件"路径，避免 EventEmitter 默认行为或恶意 listener
-	 * 让 pion-node 内部状态机崩溃。
+	 * Safe emit: only emits when listeners exist, swallows synchronous listener exceptions.
 	 */
 	__safeEmit(event, ...args) {
 		if (this.listenerCount(event) === 0) return;
@@ -276,11 +266,9 @@ class RTCDataChannel extends EventEmitter {
 	}
 
 	/**
-	 * bal IPC 后主动查询 Go-side BA，刷新 _goBufferedBytes 缓存，然后 emit bufferedamountlow。
-	 * 解决 bal 事件不携带 BA 数据导致缓存过期的问题——长空闲后上层可能因旧缓存
-	 * 误判 BA 高于实际而拒绝发送，形成死锁。
-	 *
-	 * per-PC worker 保证 dc.getBA 在同 PC 的串行队列中执行，无竞态。
+	 * Refresh Go-side BA cache after a bal IPC event, then emit bufferedamountlow.
+	 * Prevents stale-cache deadlock: without refresh, a long-idle DC's _goBufferedBytes stays
+	 * at the last ack value, potentially causing senders to overestimate BA and refuse to send.
 	 */
 	_refreshGoBA() {
 		if (this._closed) return;
@@ -323,13 +311,9 @@ class RTCDataChannel extends EventEmitter {
 	}
 
 	/**
-	 * Close this DataChannel.
-	 *
-	 * W3C 兼容的 graceful close：先等待 sendQueue 排空再关闭，
-	 * 否则调用 close() 之前 push 的最后一条消息会被丢弃（典型场景：
-	 * 文件下载在 stream 'end' 中先 send 完成确认 JSON、紧接着 close）。
-	 *
-	 * 5 秒兜底：drain 异常停滞时不无限阻塞，超时后丢弃残余并强关。
+	 * Close this DataChannel (W3C-compatible graceful close).
+	 * Waits for the sendQueue to drain before closing, preventing the last queued message
+	 * from being discarded. Times out after closeDrainTimeoutMs to avoid indefinite blocking.
 	 */
 	async close() {
 		if (this._closed) return;
@@ -358,8 +342,8 @@ class RTCDataChannel extends EventEmitter {
 	}
 
 	/**
-	 * IPC 进程崩溃时的强制关闭——不发 IPC、不等 drain，直接转 closed。
-	 * 由 RTCPeerConnection 的 exit handler 调用。
+	 * Force-close on IPC process crash — no IPC request, no drain wait, transitions to closed immediately.
+	 * Called by RTCPeerConnection's exit handler.
 	 */
 	_forceClose() {
 		if (this._closed) return;

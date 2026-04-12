@@ -2,7 +2,7 @@
 
 ## Goal
 
-pion-node is a Node.js SDK that wraps the [pion-ipc](https://github.com/nicosmd/pion-ipc) Go process, providing a W3C WebRTC-compatible API for PeerConnections and DataChannels. It aims to be API-compatible with the node-datachannel polyfill, enabling drop-in replacement in Node.js applications.
+pion-node is a Node.js SDK that wraps the [pion-ipc](https://github.com/coclaw/pion-ipc) Go process, providing a W3C WebRTC-compatible API for PeerConnections and DataChannels. It aims to be API-compatible with the node-datachannel polyfill, enabling drop-in replacement in Node.js applications.
 
 ## Architecture Overview
 
