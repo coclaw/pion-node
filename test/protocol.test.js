@@ -209,3 +209,14 @@ test('decode empty map header', () => {
 	assert.deepEqual(result.header, {});
 	assert.equal(result.payload.length, 0);
 });
+
+test('rejects header larger than 0xFFFF bytes', () => {
+	// Build a header that will encode to > 65535 bytes
+	// A large string value in the header will do it
+	const bigValue = 'x'.repeat(70000);
+	const header = { type: 'req', id: 1, method: bigValue };
+	assert.throws(
+		() => encodeFrame(header),
+		/header too large/,
+	);
+});

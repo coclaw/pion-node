@@ -608,3 +608,131 @@ test('watchdog: start failure during restart retries until success', async () =>
 	clearTimeout(ipc._restartTimer);
 	clearTimeout(ipc._resetTimer);
 });
+
+// --- additional scenario tests ---
+
+test('started getter reflects _started', () => {
+	const { ipc } = createStartedIpc();
+	assert.equal(ipc.started, true);
+	ipc._started = false;
+	assert.equal(ipc.started, false);
+});
+
+test('unknown message type is logged', async () => {
+	const logs = [];
+	const { ipc, proc } = createStartedIpc({ logger: (msg) => logs.push(msg) });
+
+	// Re-wire the reader callback to match the real start() logic, which includes unknown type logging
+	ipc._reader.onFrame((header, payload) => {
+		if (header.type === 'res') {
+			ipc._handleResponse(header, payload);
+		} else if (header.type === 'evt') {
+			ipc._handleEvent(header, payload);
+		} else {
+			ipc._log(`unknown message type: ${header.type}`);
+		}
+	});
+
+	// Inject a frame with unknown type
+	const header = { type: 'wat', id: 1 };
+	const buf = encodeFrame(header, Buffer.alloc(0));
+	proc.stdout.write(buf);
+
+	await new Promise((r) => setTimeout(r, 20));
+	assert.ok(logs.some((m) => /unknown message type: wat/.test(m)));
+});
+
+test('request rejects when writer.write throws', async () => {
+	const { ipc } = createStartedIpc();
+
+	// Sabotage the writer to throw on write
+	ipc._writer.write = () => { throw new Error('stream destroyed'); };
+
+	await assert.rejects(
+		() => ipc.request('test'),
+		/stream destroyed/,
+	);
+	assert.equal(ipc._pending.size, 0);
+});
+
+test('_killProc sends SIGTERM after timeout when process does not exit', async () => {
+	const { ipc } = createStartedIpc();
+	const logs = [];
+	ipc._logger = (msg) => logs.push(msg);
+
+	// Replace proc with one that doesn't exit on stdin.end
+	const proc = new EventEmitter();
+	proc.stdin = { end() {} };
+	let killed = false;
+	proc.kill = (sig) => {
+		killed = true;
+		// After SIGTERM, simulate exit
+		setTimeout(() => proc.emit('exit', null, sig), 10);
+	};
+	ipc._proc = proc;
+
+	await ipc._killProc(50, 'test timeout');
+
+	assert.equal(killed, true);
+	assert.ok(logs.some((m) => /SIGTERM/.test(m)));
+	assert.equal(ipc._started, false);
+	assert.equal(ipc._proc, null);
+});
+
+test('_killProc rejects all pending requests on completion', async () => {
+	const { ipc, proc } = createStartedIpc({ timeout: 5000 });
+
+	const p1 = ipc.request('a');
+	const p2 = ipc.request('b');
+
+	// Process exits immediately on stdin.end
+	const origEnd = proc.stdin.end.bind(proc.stdin);
+	proc.stdin.end = function () {
+		origEnd();
+		setTimeout(() => proc.emit('exit', 0, null), 5);
+	};
+
+	await ipc._killProc(5000, 'shutdown');
+
+	await assert.rejects(p1, /shutdown/);
+	await assert.rejects(p2, /shutdown/);
+});
+
+test('_scheduleResetTimer skips when restartResetWindowMs <= 0', () => {
+	const { ipc } = createStartedIpc();
+	ipc._autoRestart = true;
+	ipc._restartResetWindowMs = 0;
+	ipc._resetTimer = null;
+
+	ipc._scheduleResetTimer();
+	assert.equal(ipc._resetTimer, null);
+});
+
+test('_scheduleResetTimer no-op when _started=false at fire time', async () => {
+	const logs = [];
+	const { ipc } = createStartedIpc({ logger: (msg) => logs.push(msg) });
+	ipc._autoRestart = true;
+	ipc._restartResetWindowMs = 30;
+	ipc._restartAttempts = 5;
+
+	ipc._scheduleResetTimer();
+	ipc._started = false; // process died before timer fires
+
+	await new Promise((r) => setTimeout(r, 60));
+	// Timer fires but _started is false, so counter should NOT be reset
+	assert.equal(ipc._restartAttempts, 5);
+});
+
+test('_scheduleResetTimer no-op when _restartAttempts is already 0', async () => {
+	const logs = [];
+	const { ipc } = createStartedIpc({ logger: (msg) => logs.push(msg) });
+	ipc._autoRestart = true;
+	ipc._restartResetWindowMs = 30;
+	ipc._restartAttempts = 0;
+
+	ipc._scheduleResetTimer();
+
+	await new Promise((r) => setTimeout(r, 60));
+	// No log emitted because restartAttempts was already 0
+	assert.ok(!logs.some((m) => /resetting restart counter/.test(m)));
+});

@@ -818,3 +818,160 @@ test('pc.close() completes silently when IPC is dead (no not-started throw)', as
 	await pc.close();
 	assert.equal(pc.connectionState, 'closed');
 });
+
+// --- additional scenario tests ---
+
+test('maxMessageSize returns 65536', () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+	assert.equal(pc.maxMessageSize, 65536);
+});
+
+test('createDataChannel init failure emits error then close on DC', async () => {
+	const ipc = createMockIpc();
+	ipc.request = async (method) => {
+		if (method === 'pc.create') throw new Error('create failed');
+		return { header: {}, payload: Buffer.alloc(0) };
+	};
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-fail' });
+
+	const dc = pc.createDataChannel('rpc');
+
+	const errors = [];
+	const closes = [];
+	dc.on('error', (err) => errors.push(err));
+	dc.on('close', () => closes.push(true));
+
+	// Wait for async init failure to propagate
+	await new Promise((r) => setTimeout(r, 50));
+
+	assert.equal(dc.readyState, 'closed');
+	assert.equal(dc._closed, true);
+	assert.equal(errors.length, 1);
+	assert.match(errors[0].message, /create failed/);
+	assert.equal(closes.length, 1);
+});
+
+test('createDataChannel init failure without error listener still emits close', async () => {
+	const ipc = createMockIpc();
+	ipc.request = async (method) => {
+		if (method === 'pc.create') throw new Error('create failed');
+		return { header: {}, payload: Buffer.alloc(0) };
+	};
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-fail2' });
+
+	const dc = pc.createDataChannel('rpc');
+	// No error listener — should not throw
+
+	const closes = [];
+	dc.on('close', () => closes.push(true));
+
+	await new Promise((r) => setTimeout(r, 50));
+
+	assert.equal(dc.readyState, 'closed');
+	assert.equal(closes.length, 1);
+});
+
+test('close() does not re-emit connectionstatechange if already closed', async () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+	await pc._ready;
+
+	const events = [];
+	pc.on('connectionstatechange', () => events.push(pc.connectionState));
+
+	await pc.close();
+	assert.equal(events.length, 1);
+	assert.equal(events[0], 'closed');
+
+	// Second close should be a no-op
+	await pc.close();
+	assert.equal(events.length, 1);
+});
+
+test('close() sends pc.close IPC when everything is normal', async () => {
+	const ipc = createMockIpc();
+	ipc.started = true;
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+	await pc._ready;
+
+	await pc.close();
+
+	const closeReq = ipc.requests.find((r) => r.method === 'pc.close');
+	assert.ok(closeReq, 'pc.close IPC should be sent');
+	assert.equal(closeReq.opts.pcId, 'pc-1');
+});
+
+test('statechange event filters by pcId', () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+
+	const connEvents = [];
+	pc.on('connectionstatechange', () => connEvents.push(pc.connectionState));
+
+	// Non-matching pcId
+	ipc.emit('pc.statechange', {
+		pcId: 'pc-other',
+		payload: Buffer.from(encode({ connState: 'connected', iceState: 'connected' })),
+	});
+
+	assert.equal(connEvents.length, 0);
+	assert.equal(pc.connectionState, 'new');
+});
+
+test('datachannel event: remote DC has correct properties', () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+
+	const channels = [];
+	pc.on('datachannel', (e) => channels.push(e.channel));
+
+	ipc.emit('pc.datachannel', {
+		pcId: 'pc-1',
+		dcLabel: 'remote-dc',
+		payload: Buffer.from(encode({ ordered: false })),
+	});
+
+	assert.equal(channels.length, 1);
+	assert.equal(channels[0].label, 'remote-dc');
+	assert.equal(channels[0]._remote, true);
+	assert.equal(channels[0].ordered, false);
+	assert.equal(pc._dataChannels.size, 1);
+});
+
+test('datachannel event filters by pcId', () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+
+	const channels = [];
+	pc.on('datachannel', (e) => channels.push(e.channel));
+
+	ipc.emit('pc.datachannel', {
+		pcId: 'pc-other',
+		dcLabel: 'remote-dc',
+		payload: Buffer.from(encode({ ordered: true })),
+	});
+
+	assert.equal(channels.length, 0);
+});
+
+test('close() handles DC close failure without blocking', async () => {
+	const ipc = createMockIpc();
+	let callCount = 0;
+	ipc.request = async (method) => {
+		callCount++;
+		if (method === 'dc.close') throw new Error('dc.close failed');
+		return { header: {}, payload: Buffer.alloc(0) };
+	};
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
+	await pc._ready;
+
+	const dc = pc.createDataChannel('rpc');
+	await new Promise((r) => setTimeout(r, 30));
+	// Simulate open
+	ipc.emit('dc.open', { pcId: 'pc-1', dcLabel: 'rpc' });
+
+	// close should not throw even though dc.close IPC fails
+	await pc.close();
+	assert.equal(pc.connectionState, 'closed');
+});

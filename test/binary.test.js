@@ -168,3 +168,30 @@ test('PATH lookup finds binary', () => {
 		process.env.PATH = origPath;
 	}
 });
+
+test('PATH lookup skips empty entries', () => {
+	const orig = process.env.PION_IPC_BIN;
+	const origPath = process.env.PATH;
+	try {
+		delete process.env.PION_IPC_BIN;
+		const fakeResolve = () => { throw new Error('MODULE_NOT_FOUND'); };
+
+		// Put a valid dir after empty entries
+		const tmpDir = mkdtempSync(join(tmpdir(), 'pion-path-test-'));
+		const binName = process.platform === 'win32' ? 'pion-ipc.exe' : 'pion-ipc';
+		writeFileSync(join(tmpDir, binName), '');
+		const sep = process.platform === 'win32' ? ';' : ':';
+		// PATH with leading empty entries
+		process.env.PATH = `${sep}${sep}${tmpDir}`;
+
+		const result = resolveBinary(fakeResolve);
+		assert.equal(result, join(tmpDir, binName));
+	} finally {
+		if (orig !== undefined) {
+			process.env.PION_IPC_BIN = orig;
+		} else {
+			delete process.env.PION_IPC_BIN;
+		}
+		process.env.PATH = origPath;
+	}
+});

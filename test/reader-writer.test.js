@@ -213,3 +213,48 @@ test('writer write to ended stream', async () => {
 	await new Promise((r) => setTimeout(r, 10));
 	assert.ok(errors.length > 0, 'should emit error when writing to ended stream');
 });
+
+test('reader emits error for frame size too small (< 2)', async () => {
+	const stream = new PassThrough();
+	const reader = new FrameReader(stream);
+
+	const errPromise = new Promise((resolve) => {
+		reader.onError((err) => resolve(err));
+	});
+
+	// Write a length prefix indicating totalLen = 1, which is below minimum of 2
+	const buf = Buffer.alloc(5);
+	buf.writeUInt32LE(1, 0); // totalLen = 1
+	buf[4] = 0x00; // one byte of body data (insufficient)
+	stream.write(buf);
+
+	const err = await errPromise;
+	assert.match(err.message, /too small/);
+});
+
+test('reader resets buffer after frame-too-small error', async () => {
+	const stream = new PassThrough();
+	const reader = new FrameReader(stream);
+
+	let errorCount = 0;
+	reader.onError(() => { errorCount++; });
+
+	// Send a frame with totalLen = 0 (too small)
+	const buf = Buffer.alloc(4);
+	buf.writeUInt32LE(0, 0);
+	stream.write(buf);
+
+	await new Promise((r) => setTimeout(r, 10));
+	assert.equal(errorCount, 1);
+
+	// Reader should have reset its buffer; send a valid frame
+	const frames = [];
+	reader.onFrame((header) => frames.push(header));
+
+	const validFrame = encodeFrame({ type: 'req', id: 1, method: 'ok' });
+	stream.write(validFrame);
+
+	await new Promise((r) => setTimeout(r, 10));
+	assert.equal(frames.length, 1);
+	assert.equal(frames[0].method, 'ok');
+});
