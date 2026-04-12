@@ -68,12 +68,18 @@ W3C's `RTCDataChannel.send()` is synchronous. pion-node implements this with an 
 
 This provides W3C-compatible synchronous `send()` semantics while maintaining IPC backpressure through the queue.
 
-### bufferedAmount as Synchronous Property
+### bufferedAmount: Dual-Source Tracking (R-Mode)
 
-Unlike the previous async `getBufferedAmount()` method, `bufferedAmount` is now a synchronous property that tracks the local send queue size. This is sufficient for flow control because:
+`bufferedAmount` is a synchronous property returning `_bufferedAmount + _goBufferedBytes`:
 
-- The value reflects bytes queued but not yet acknowledged by the Go process.
-- Combined with `bufferedAmountLowThreshold` and `bufferedamountlow` events, callers can implement proper flow control without polling.
+- **`_bufferedAmount`**: JS-side estimate — incremented synchronously by `send()`, decremented by the drain loop after each IPC ack.
+- **`_goBufferedBytes`**: Go-side SCTP BufferedAmount cache, updated from two sources:
+  1. **Drain loop** (primary): Each `dc.send` IPC ack carries the post-send `bufferedAmount` in its payload. The drain loop parses and caches it immediately.
+  2. **`_refreshGoBA`** (supplementary): When Go fires a `dc.bufferedamountlow` IPC event, JS issues a `dc.getBA` IPC request to get the current Go-side BA. This prevents stale-cache deadlock — without it, a long-idle DC's `_goBufferedBytes` stays at the last ack value, potentially causing the sender to overestimate BA and refuse to send.
+
+The `_refreshGoBA` path emits `bufferedamountlow` unconditionally after the refresh. This may cause occasional double emission (alongside the drain loop's threshold-cross check), but consumers are idempotent (e.g., `stream.resume()` is a no-op if already flowing). The trade-off favors robustness over strict W3C edge-trigger semantics.
+
+Three layers of close guards in `_refreshGoBA` prevent post-close cache resurrection: sync entry check (`_closed`), async `.then()` check (`_closed || readyState !== 'open'`), and async `.catch()` check.
 
 ### on* Property Setters
 
