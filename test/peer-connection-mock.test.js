@@ -957,16 +957,14 @@ test('datachannel event filters by pcId', () => {
 
 test('close() handles DC close failure without blocking', async () => {
 	const ipc = createMockIpc();
-	let callCount = 0;
 	ipc.request = async (method) => {
-		callCount++;
 		if (method === 'dc.close') throw new Error('dc.close failed');
 		return { header: {}, payload: Buffer.alloc(0) };
 	};
 	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });
 	await pc._ready;
 
-	const dc = pc.createDataChannel('rpc');
+	pc.createDataChannel('rpc');
 	await new Promise((r) => setTimeout(r, 30));
 	// Simulate open
 	ipc.emit('dc.open', { pcId: 'pc-1', dcLabel: 'rpc' });
