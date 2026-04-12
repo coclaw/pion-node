@@ -38,8 +38,15 @@
 	"scripts": {
 		"lint": "eslint src/ test/",
 		"check": "pnpm lint",
-		"test": "c8 --reporter=text --reporter=lcov node --test test/*.test.js",
+		"test": "c8 --check-coverage --lines 90 --branches 90 --functions 90 --statements 90 --reporter=text --reporter=lcov node --test test/*.test.js",
 		"verify": "pnpm check && pnpm test"
+	},
+	"optionalDependencies": {
+		"@coclaw/pion-ipc-linux-x64": "0.1.0",
+		"@coclaw/pion-ipc-linux-arm64": "0.1.0",
+		"@coclaw/pion-ipc-darwin-x64": "0.1.0",
+		"@coclaw/pion-ipc-darwin-arm64": "0.1.0",
+		"@coclaw/pion-ipc-win32-x64": "0.1.0"
 	},
 	"dependencies": {
 		"@msgpack/msgpack": "^3.0.0"

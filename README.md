@@ -8,9 +8,13 @@ Node.js SDK for [pion-ipc](https://github.com/coclaw/pion-ipc) — spawn and man
 npm install @coclaw/pion-node
 ```
 
-You also need the `pion-ipc` Go binary. Either:
-- Set `PION_IPC_BIN` environment variable to the binary path
-- Add `pion-ipc` to your system `PATH`
+The `pion-ipc` Go binary is resolved in this order:
+
+1. **`PION_IPC_BIN` env var** — explicit path to the binary
+2. **npm platform package** — `@coclaw/pion-ipc-{platform}-{arch}` installed via `optionalDependencies` (automatic on `npm install`)
+3. **System PATH** — `pion-ipc` found on `$PATH`
+
+On supported platforms (linux-x64, linux-arm64, darwin-x64, darwin-arm64, win32-x64), the binary is automatically installed via npm. No manual setup needed.
 
 ## Usage
 

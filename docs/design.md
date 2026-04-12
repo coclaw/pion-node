@@ -172,9 +172,19 @@ When the Go process exits, RTCPeerConnection and RTCDataChannel transition to te
 The Go binary is resolved at runtime in priority order:
 
 1. `PION_IPC_BIN` environment variable (explicit path).
-2. `pion-ipc` on the system PATH.
+2. npm platform package (`@coclaw/pion-ipc-{platform}-{arch}`) installed via `optionalDependencies`.
+3. `pion-ipc` on the system PATH.
 
-This keeps the npm package lightweight (no bundled binaries) and allows users to manage the Go binary through their preferred method (system package manager, Docker image, CI artifact, etc.).
+Platform packages follow the esbuild/turbo pattern: each package declares `os` and `cpu` fields in its `package.json`, so npm/pnpm automatically installs only the binary for the current platform. No install scripts are needed — the binary is a static file within the package.
+
+Supported platforms:
+- `@coclaw/pion-ipc-linux-x64`
+- `@coclaw/pion-ipc-linux-arm64`
+- `@coclaw/pion-ipc-darwin-x64`
+- `@coclaw/pion-ipc-darwin-arm64`
+- `@coclaw/pion-ipc-win32-x64`
+
+The PATH fallback allows users who prefer manual binary management (Docker, system packages, CI artifacts) to skip the npm platform packages entirely.
 
 ## API Compatibility with W3C / node-datachannel
 
