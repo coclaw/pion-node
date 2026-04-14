@@ -1,6 +1,6 @@
 {
 	"name": "@coclaw/pion-node",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"type": "module",
 	"description": "Node.js SDK for pion-ipc — W3C-style PeerConnection/DataChannel API over a Go WebRTC sidecar",
 	"license": "Apache-2.0",
@@ -44,12 +44,12 @@
 		"release:check": "bash ./scripts/release-check.sh"
 	},
 	"optionalDependencies": {
-		"@coclaw/pion-ipc-linux-x64": "0.1.1",
-		"@coclaw/pion-ipc-linux-arm64": "0.1.1",
-		"@coclaw/pion-ipc-linux-arm": "0.1.1",
-		"@coclaw/pion-ipc-darwin-x64": "0.1.1",
-		"@coclaw/pion-ipc-darwin-arm64": "0.1.1",
-		"@coclaw/pion-ipc-win32-x64": "0.1.1"
+		"@coclaw/pion-ipc-linux-x64": "0.1.2",
+		"@coclaw/pion-ipc-linux-arm64": "0.1.2",
+		"@coclaw/pion-ipc-linux-arm": "0.1.2",
+		"@coclaw/pion-ipc-darwin-x64": "0.1.2",
+		"@coclaw/pion-ipc-darwin-arm64": "0.1.2",
+		"@coclaw/pion-ipc-win32-x64": "0.1.2"
 	},
 	"dependencies": {
 		"@msgpack/msgpack": "^3.0.0"
