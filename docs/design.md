@@ -181,6 +181,7 @@ Platform packages follow the esbuild/turbo pattern: each package declares `os` a
 Supported platforms:
 - `@coclaw/pion-ipc-linux-x64`
 - `@coclaw/pion-ipc-linux-arm64`
+- `@coclaw/pion-ipc-linux-arm` (armv7l hard-float — Raspberry Pi 2/3/4/5 on 32-bit Raspberry Pi OS)
 - `@coclaw/pion-ipc-darwin-x64`
 - `@coclaw/pion-ipc-darwin-arm64`
 - `@coclaw/pion-ipc-win32-x64`

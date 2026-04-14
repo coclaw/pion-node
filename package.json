@@ -46,6 +46,7 @@
 	"optionalDependencies": {
 		"@coclaw/pion-ipc-linux-x64": "0.1.1",
 		"@coclaw/pion-ipc-linux-arm64": "0.1.1",
+		"@coclaw/pion-ipc-linux-arm": "0.1.1",
 		"@coclaw/pion-ipc-darwin-x64": "0.1.1",
 		"@coclaw/pion-ipc-darwin-arm64": "0.1.1",
 		"@coclaw/pion-ipc-win32-x64": "0.1.1"

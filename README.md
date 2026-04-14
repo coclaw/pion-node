@@ -14,7 +14,7 @@ The `pion-ipc` Go binary is resolved in this order:
 2. **npm platform package** — `@coclaw/pion-ipc-{platform}-{arch}` installed via `optionalDependencies` (automatic on `npm install`)
 3. **System PATH** — `pion-ipc` found on `$PATH`
 
-On supported platforms (linux-x64, linux-arm64, darwin-x64, darwin-arm64, win32-x64), the binary is automatically installed via npm. No manual setup needed.
+On supported platforms (linux-x64, linux-arm64, linux-arm, darwin-x64, darwin-arm64, win32-x64), the binary is automatically installed via npm. No manual setup needed.
 
 ## Usage
 

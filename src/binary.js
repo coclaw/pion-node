@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 const PLATFORM_PACKAGES = {
 	'linux-x64': '@coclaw/pion-ipc-linux-x64',
 	'linux-arm64': '@coclaw/pion-ipc-linux-arm64',
+	'linux-arm': '@coclaw/pion-ipc-linux-arm',
 	'darwin-x64': '@coclaw/pion-ipc-darwin-x64',
 	'darwin-arm64': '@coclaw/pion-ipc-darwin-arm64',
 	'win32-x64': '@coclaw/pion-ipc-win32-x64',
