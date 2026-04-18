@@ -1,15 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
 import { PionIpc } from '../src/pion-ipc.js';
 import { RTCPeerConnection } from '../src/peer-connection.js';
 import { RTCDataChannel } from '../src/data-channel.js';
+import { resolveBinary } from '../src/binary.js';
 
-const BIN_PATH = process.env.PION_IPC_BIN;
-const hasBinary = BIN_PATH && existsSync(BIN_PATH);
+let BIN_PATH = null;
+try { BIN_PATH = resolveBinary(); } catch { /* no binary available */ }
+const skipReason = BIN_PATH ? false : 'pion-ipc binary not found (set PION_IPC_BIN, install platform pkg, or add to PATH)';
 
 test('two PeerConnections exchange data via DataChannel', {
-	skip: !hasBinary && 'PION_IPC_BIN not set or binary missing',
+	skip: skipReason,
 	timeout: 30_000,
 }, async () => {
 	const ipc = new PionIpc({ binPath: BIN_PATH });
@@ -33,9 +34,11 @@ test('two PeerConnections exchange data via DataChannel', {
 	const dc1 = pc1.createDataChannel('test-channel');
 
 	const offer = await pc1.createOffer();
+	await pc1.setLocalDescription(offer);
 	await pc2.setRemoteDescription(offer);
 
 	const answer = await pc2.createAnswer();
+	await pc2.setLocalDescription(answer);
 	await pc1.setRemoteDescription(answer);
 
 	// Wait for ICE candidates to trickle, then exchange them
@@ -101,7 +104,7 @@ test('two PeerConnections exchange data via DataChannel', {
 });
 
 test('PeerConnection connectionstatechange event fires', {
-	skip: !hasBinary && 'PION_IPC_BIN not set or binary missing',
+	skip: skipReason,
 	timeout: 20_000,
 }, async () => {
 	const ipc = new PionIpc({ binPath: BIN_PATH });
@@ -127,8 +130,10 @@ test('PeerConnection connectionstatechange event fires', {
 	const dummyDc = pc1.createDataChannel('dummy');
 	dummyDc.on('error', () => {}); // suppress teardown errors
 	const offer = await pc1.createOffer();
+	await pc1.setLocalDescription(offer);
 	await pc2.setRemoteDescription(offer);
 	const answer = await pc2.createAnswer();
+	await pc2.setLocalDescription(answer);
 	await pc1.setRemoteDescription(answer);
 
 	// Wait for ICE and connection to establish
