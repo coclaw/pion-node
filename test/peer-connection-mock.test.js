@@ -446,6 +446,23 @@ test('selectedcandidatepairchange event updates getter and emits', () => {
 	assert.deepEqual(events[0], pair);
 });
 
+test('selectedcandidatepairchange passes through local.relayProtocol (relay candidate)', () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-relay' });
+
+	const pair = {
+		local: { type: 'relay', address: '198.51.100.1', port: 49152, protocol: 'udp', relayProtocol: 'tcp' },
+		remote: { type: 'host', address: '192.0.2.5', port: 22222, protocol: 'udp' },
+	};
+	ipc.emit('pc.selectedcandidatepairchange', {
+		pcId: 'pc-relay',
+		payload: Buffer.from(encode(pair)),
+	});
+
+	assert.equal(pc.selectedCandidatePair.local.relayProtocol, 'tcp');
+	assert.equal(pc.selectedCandidatePair.remote.relayProtocol, undefined);
+});
+
 test('selectedcandidatepairchange filters by pcId', () => {
 	const ipc = createMockIpc();
 	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-1' });

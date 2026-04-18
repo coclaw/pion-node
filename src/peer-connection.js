@@ -7,6 +7,14 @@ import { RTCDataChannel } from './data-channel.js';
  * W3C-compatible RTCPeerConnection wrapper over pion-ipc IPC.
  * Events: 'icecandidate', 'connectionstatechange', 'iceconnectionstatechange',
  *         'selectedcandidatepairchange', 'icegatheringstatechange', 'signalingstatechange', 'datachannel'
+ *
+ * Selected candidate pair structure (after 'selectedcandidatepairchange'):
+ *   pc.selectedCandidatePair = {
+ *     local:  { type, address, port, protocol, relayProtocol? },
+ *     remote: { type, address, port, protocol },
+ *   }
+ * - protocol: candidate 自身的传输层协议（udp/tcp）
+ * - relayProtocol: 仅 local 端 type=='relay' 时存在，表示 client 与 TURN 服务器间的协议（udp/tcp/tls）
  */
 class RTCPeerConnection extends EventEmitter {
 	/**
