@@ -128,8 +128,11 @@ test('no env and not in PATH throws', () => {
 	try {
 		delete process.env.PION_IPC_BIN;
 		process.env.PATH = '/tmp/empty-path-for-test';
+		// 必须同时 mock require.resolve 模拟"平台包未安装"，否则本地 pnpm install
+		// 拉到 @coclaw/pion-ipc-<platform> 会让 resolveBinary 直接从 node_modules 找到二进制。
+		const fakeResolve = () => { throw new Error('MODULE_NOT_FOUND'); };
 		assert.throws(
-			() => resolveBinary(),
+			() => resolveBinary(fakeResolve),
 			/pion-ipc binary not found/
 		);
 	} finally {

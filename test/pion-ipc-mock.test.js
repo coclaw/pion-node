@@ -561,19 +561,28 @@ test('watchdog: _killProc resolves when process exits', async () => {
 	assert.equal(ipc._pending.size, 0);
 });
 
-test('watchdog: start() synchronously resets flags and clears stale timer', () => {
-	const ipc = new PionIpc();
+test('watchdog: start() synchronously resets _stopped flag and clears stale timer', async () => {
+	// 指向不存在的路径：spawn 会 async error，start() 内 ping 超时后走 _abortStart
+	// 路径；避免真 spawn 官方 binary 导致测试依赖外部状态 / teardown 拖延。
+	const ipc = new PionIpc({ timeout: 50 });
+	ipc._binPath = '/nonexistent/pion-ipc-test-placeholder';
 	ipc._stopped = true;
-	ipc._intentionalStop = true;
-	const staleTimer = setTimeout(() => {}, 99999);
+	const staleTimer = setTimeout(() => {
+		throw new Error('stale _restartTimer should have been cleared by start()');
+	}, 200);
 	ipc._restartTimer = staleTimer;
 
-	// start() 在 resolveBinary() 前同步重置标记并清除 timer
-	ipc.start().catch(() => {});
+	// start() 在 spawn/ping 前的同步段应重置 _stopped 并清除 stale _restartTimer
+	// （_intentionalStop 会在 ping 等待期前被内部同步置为 true 以防 race，不适合作为同步断言）
+	const p = ipc.start().catch(() => {});
 
-	assert.equal(ipc._stopped, false);
-	assert.equal(ipc._intentionalStop, false);
-	// stale timer 已被清除
+	assert.equal(ipc._stopped, false, '_stopped should be reset synchronously');
+	// clearTimeout 不改引用，只把 Timer 标记为 _destroyed；到期回调不会触发
+	assert.equal(staleTimer._destroyed, true, 'stale _restartTimer should be cleared');
+
+	// 等 start() 走完失败路径（_abortStart 清理 proc）
+	await p;
+	await ipc.stop().catch(() => {});
 });
 
 test('watchdog: start failure during restart retries until success', async () => {
