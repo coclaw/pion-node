@@ -990,3 +990,54 @@ test('close() handles DC close failure without blocking', async () => {
 	await pc.close();
 	assert.equal(pc.connectionState, 'closed');
 });
+
+test('constructor forwards settings in pc.create payload', async () => {
+	const ipc = createMockIpc();
+	const settings = {
+		sctpRtoMax: 10000,
+		iceFailedTimeout: 15000,
+	};
+	const pc = new RTCPeerConnection({
+		iceServers: [{ urls: 'stun:stun.example.com' }],
+		settings,
+		_ipc: ipc,
+		_pcId: 'pc-settings',
+	});
+
+	await pc._ready;
+
+	assert.equal(ipc.requests.length, 1);
+	assert.equal(ipc.requests[0].method, 'pc.create');
+	assert.deepEqual(ipc.requests[0].payload, {
+		pcId: 'pc-settings',
+		iceServers: [{ urls: ['stun:stun.example.com'] }],
+		settings: { sctpRtoMax: 10000, iceFailedTimeout: 15000 },
+	});
+});
+
+test('constructor omits settings field when not provided', async () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({
+		iceServers: [{ urls: 'stun:stun.example.com' }],
+		_ipc: ipc,
+		_pcId: 'pc-no-settings',
+	});
+	await pc._ready;
+
+	const payload = ipc.requests[0].payload;
+	assert.ok(!('settings' in payload), 'settings key should be absent when undefined');
+});
+
+test('constructor forwards empty settings object verbatim', async () => {
+	const ipc = createMockIpc();
+	const pc = new RTCPeerConnection({
+		iceServers: [],
+		settings: {},
+		_ipc: ipc,
+		_pcId: 'pc-empty-settings',
+	});
+	await pc._ready;
+
+	const payload = ipc.requests[0].payload;
+	assert.deepEqual(payload.settings, {}, 'empty settings object should be forwarded as-is');
+});

@@ -82,7 +82,7 @@ Max frame size: 16 MiB.
 
 ### `RTCPeerConnection`
 
-- `new RTCPeerConnection({ _ipc, iceServers?, _pcId? })` -- create (pcId defaults to UUID)
+- `new RTCPeerConnection({ _ipc, iceServers?, settings?, _pcId? })` -- create (pcId defaults to UUID)
 - `createOffer()` / `createAnswer()` -- SDP negotiation
 - `setRemoteDescription(desc)` / `setLocalDescription(desc)`
 - `addIceCandidate(candidate)`
@@ -103,6 +103,32 @@ Max frame size: 16 MiB.
 - `on*` property handlers for all events
 
 **Note on `bufferedAmount`**: Returns the sum of JS-side send queue size and Go-side SCTP buffer (dual-source tracking). The Go-side value is updated from each `dc.send` ack and refreshed on `bufferedamountlow` events, providing accurate flow control without manual queries.
+
+### `settings` — pion SettingEngine knobs
+
+Optional per-PeerConnection configuration, forwarded to the Go side at `pc.create` time. Every field is independently optional; omitted fields use pion defaults. Duration fields are in **milliseconds** (numbers). Values above 300000 ms (5 minutes) are rejected with an error — no PeerConnection is created.
+
+| Field | Type | Pion method | Pion default |
+|---|---|---|---|
+| `sctpRtoMax` | number (ms) | `SetSCTPRTOMax` | 60000 |
+| `sctpMaxReceiveBufferSize` | number (bytes) | `SetSCTPMaxReceiveBufferSize` | (pion sctp package default) |
+| `iceDisconnectedTimeout` | number (ms) | `SetICETimeouts` (arg 1) | 5000 |
+| `iceFailedTimeout` | number (ms) | `SetICETimeouts` (arg 2) | 25000 |
+| `iceKeepAliveInterval` | number (ms) | `SetICETimeouts` (arg 3) | 2000 |
+| `stunGatherTimeout` | number (ms) | `SetSTUNGatherTimeout` | 5000 |
+
+The three ICE timeout fields share a single pion setter. If the caller specifies any of them, the unspecified fields fall back to the pion defaults listed above.
+
+```js
+const pc = new RTCPeerConnection({
+  _ipc: ipc,
+  iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }],
+  settings: {
+    sctpRtoMax: 10000,   // shorten worst-case SCTP backoff after long idle
+    iceFailedTimeout: 15000,
+  },
+});
+```
 
 ## License
 

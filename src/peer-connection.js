@@ -20,6 +20,19 @@ class RTCPeerConnection extends EventEmitter {
 	/**
 	 * @param {object} [config]
 	 * @param {object[]} [config.iceServers] - ICE server configurations
+	 * @param {object} [config.settings] - pion-specific SettingEngine knobs (pion-node extension).
+	 *   Forwarded verbatim to the Go side in `pc.create`; Go performs validation and rejects
+	 *   out-of-range values. All fields are independently optional — absence means "do not call
+	 *   the corresponding pion setter" and pion defaults apply. Duration fields are milliseconds.
+	 *   Supported fields:
+	 *     - `sctpRtoMax` (number, ms): pion `SetSCTPRTOMax`. Default 60000.
+	 *     - `sctpMaxReceiveBufferSize` (number, bytes): pion `SetSCTPMaxReceiveBufferSize`.
+	 *     - `iceDisconnectedTimeout` (number, ms): `SetICETimeouts` arg 1. Default 5000.
+	 *     - `iceFailedTimeout` (number, ms): `SetICETimeouts` arg 2. Default 25000.
+	 *     - `iceKeepAliveInterval` (number, ms): `SetICETimeouts` arg 3. Default 2000.
+	 *     - `stunGatherTimeout` (number, ms): `SetSTUNGatherTimeout`. Default 5000.
+	 *   If any of the three ICE timeout fields is provided, the other two fall back to pion
+	 *   defaults (pion's `SetICETimeouts` sets all three together).
 	 * @param {import('./pion-ipc.js').PionIpc} [config._ipc] - PionIpc instance (pion-node extension)
 	 * @param {string} [config._pcId] - PeerConnection ID (pion-node extension, defaults to UUID)
 	 */
@@ -32,6 +45,7 @@ class RTCPeerConnection extends EventEmitter {
 			...s,
 			urls: Array.isArray(s.urls) ? s.urls : (s.urls ? [s.urls] : []),
 		}));
+		this._settings = config.settings; // pass-through; validated on Go side
 		this._dataChannels = new Set();
 		this._connState = 'new';
 		this._iceState = 'new';
@@ -41,10 +55,12 @@ class RTCPeerConnection extends EventEmitter {
 
 		// Deferred init: starts IPC pc.create, methods await this before proceeding
 		if (this._ipc) {
-			this._ready = this._ipc.request('pc.create', {}, {
+			const createPayload = {
 				pcId: this._pcId,
 				iceServers: this._iceServers,
-			}).catch((err) => {
+			};
+			if (this._settings !== undefined) createPayload.settings = this._settings;
+			this._ready = this._ipc.request('pc.create', {}, createPayload).catch((err) => {
 				this._initError = err;
 				throw err;
 			});
