@@ -88,6 +88,7 @@ Max frame size: 16 MiB.
 - `addIceCandidate(candidate)`
 - `restartIce()` -- ICE restart, returns new offer
 - `createDataChannel(label, opts?)` -- create DataChannel (synchronous, W3C-compatible)
+- `getSctpStats()` -- snapshot of the underlying SCTP association (see below)
 - `close()`
 - Getters: `connectionState`, `iceConnectionState`, `iceGatheringState`, `signalingState`, `selectedCandidatePair`
 - Events: `'icecandidate'`, `'connectionstatechange'`, `'iceconnectionstatechange'`, `'selectedcandidatepairchange'`, `'icegatheringstatechange'`, `'signalingstatechange'`, `'datachannel'`
@@ -129,6 +130,38 @@ const pc = new RTCPeerConnection({
   },
 });
 ```
+
+### `getSctpStats()` — SCTP association snapshot
+
+Returns a snapshot of the underlying SCTP association. Useful for diagnosing stalls after long idle periods — correlating `congestionWindow` and `bytesSent` deltas over time reveals whether the sender is stuck in loss recovery (cwnd collapsed back to ~1 MTU with bytesSent flat across samples).
+
+Return values:
+
+- An object with the fields below, once the SCTP association is up.
+- `null` when the association has not yet been established (before DTLS handshake completes).
+- After `close()` the call **rejects** with the underlying IPC error — the PeerConnection no longer exists on the Go side.
+
+| Field | Type | Unit | Description |
+|---|---|---|---|
+| `bytesSent` | number | bytes | Cumulative bytes sent on the SCTP association |
+| `bytesReceived` | number | bytes | Cumulative bytes received on the SCTP association |
+| `srttMs` | number | ms | Smoothed round-trip time; `0` before first RTT measurement |
+| `congestionWindow` | number | bytes | Current congestion window (cwnd) |
+| `receiverWindow` | number | bytes | Peer's receiver window (rwnd) |
+| `mtu` | number | bytes | Current MTU |
+
+```js
+const stats = await pc.getSctpStats();
+if (stats === null) {
+  console.log('SCTP association not yet established');
+} else {
+  console.log(`cwnd=${stats.congestionWindow} srtt=${stats.srttMs}ms sent=${stats.bytesSent}`);
+}
+```
+
+**Not exposed** (no public pion API in v1.8.36): current RTO value, t3RTX backoff level (`nRtos`), inflight chunk count. These would require upstream pion changes.
+
+**Do not call at high frequency**. The call internally walks the PeerConnection's transceivers, candidates, and data channels. A 5-10 s sampling cadence is fine; tighter than 1 s across many PeerConnections is wasteful.
 
 ## License
 

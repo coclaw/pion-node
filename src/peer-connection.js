@@ -281,6 +281,45 @@ class RTCPeerConnection extends EventEmitter {
 	}
 
 	/**
+	 * Retrieve a snapshot of the underlying SCTP association's statistics.
+	 * Returns `null` when the SCTP association has not yet been established
+	 * (before DTLS handshake completes).
+	 *
+	 * After `close()` the call rejects (the underlying PeerConnection is gone
+	 * on the Go side), mirroring the behavior of `createOffer()` etc.
+	 *
+	 * @typedef {object} SctpStats
+	 * @property {number} bytesSent - cumulative bytes sent on the SCTP association
+	 * @property {number} bytesReceived - cumulative bytes received on the SCTP association
+	 * @property {number} srttMs - smoothed round-trip time in milliseconds; 0 before first RTT measurement
+	 * @property {number} congestionWindow - current cwnd, in bytes
+	 * @property {number} receiverWindow - peer's rwnd, in bytes
+	 * @property {number} mtu - current MTU, in bytes
+	 *
+	 * Fields that cannot be exposed through pion's public API (current RTO,
+	 * t3RTX backoff level `nRtos`, inflight chunk count) are intentionally
+	 * omitted. See docs/ipc-protocol.md#pcgetsctpstats for rationale.
+	 *
+	 * Avoid high-frequency polling — 5-10 s cadence is fine; tighter than 1 s
+	 * across many PeerConnections is wasteful (pion walks transceivers /
+	 * candidates / DCs internally on each call).
+	 *
+	 * @returns {Promise<SctpStats|null>}
+	 */
+	async getSctpStats() {
+		await this._ready;
+		const { payload } = await this._ipc.request('pc.getSctpStats', { pcId: this._pcId });
+		// Treat an empty-payload response as "no stats available" (defensive: the
+		// Go side always emits msgpack nil (0xc0) for a nil *SctpStats, so this
+		// only matters if something upstream drops the payload — without this
+		// guard @msgpack/msgpack would throw a bare RangeError that hides the
+		// source).
+		if (!payload || payload.length === 0) return null;
+		const decoded = decode(payload);
+		return decoded ?? null;
+	}
+
+	/**
 	 * Create a new DataChannel (synchronous, W3C-compatible).
 	 * @param {string} label
 	 * @param {object} [opts]

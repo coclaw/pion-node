@@ -4,12 +4,16 @@ import { EventEmitter } from 'node:events';
 import { encode } from '@msgpack/msgpack';
 import { RTCPeerConnection } from '../src/peer-connection.js';
 
-// Mock IPC: records all request calls and returns mock responses
-function createMockIpc() {
+// Mock IPC: records all request calls and returns mock responses.
+// Pass `overrides` as { method: () => Buffer } to customize per-method payloads.
+function createMockIpc(overrides = {}) {
 	const ipc = new EventEmitter();
 	ipc.requests = [];
 	ipc.request = async (method, opts, payload) => {
 		ipc.requests.push({ method, opts, payload });
+		if (overrides[method]) {
+			return { header: {}, payload: overrides[method]() };
+		}
 		if (method === 'pc.createOffer' || method === 'pc.createAnswer' || method === 'pc.restartIce') {
 			return { header: {}, payload: Buffer.from(encode({ sdp: 'mock-sdp' })) };
 		}
@@ -1040,4 +1044,97 @@ test('constructor forwards empty settings object verbatim', async () => {
 
 	const payload = ipc.requests[0].payload;
 	assert.deepEqual(payload.settings, {}, 'empty settings object should be forwarded as-is');
+});
+
+test('getSctpStats decodes a populated SctpStats payload', async () => {
+	const sctpStats = {
+		bytesSent: 12345,
+		bytesReceived: 67890,
+		srttMs: 42.5,
+		congestionWindow: 4380,
+		receiverWindow: 131072,
+		mtu: 1228,
+	};
+	const ipc = createMockIpc({
+		'pc.getSctpStats': () => Buffer.from(encode(sctpStats)),
+	});
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-stats' });
+
+	const stats = await pc.getSctpStats();
+	assert.deepEqual(stats, sctpStats);
+
+	// Verify the RPC was dispatched with correct pcId
+	const req = ipc.requests.find((r) => r.method === 'pc.getSctpStats');
+	assert.ok(req, 'pc.getSctpStats request should have been sent');
+	assert.equal(req.opts.pcId, 'pc-stats');
+});
+
+test('getSctpStats returns null when the Go side encodes nil', async () => {
+	// msgpack encode(null) → nil byte (0xc0) → our getSctpStats decodes to null
+	const ipc = createMockIpc({
+		'pc.getSctpStats': () => Buffer.from(encode(null)),
+	});
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-nil' });
+
+	const stats = await pc.getSctpStats();
+	assert.equal(stats, null);
+});
+
+test('getSctpStats awaits pc.create before dispatching', async () => {
+	// pc.create returns slowly; getSctpStats should queue behind it, not race.
+	let createResolve;
+	const createPromise = new Promise((r) => {
+		createResolve = r;
+	});
+	const ipc = new EventEmitter();
+	ipc.requests = [];
+	ipc.request = async (method, opts, payload) => {
+		ipc.requests.push({ method, opts, payload });
+		if (method === 'pc.create') {
+			await createPromise;
+			return { header: {}, payload: Buffer.alloc(0) };
+		}
+		if (method === 'pc.getSctpStats') {
+			return { header: {}, payload: Buffer.from(encode({ bytesSent: 1, bytesReceived: 2, srttMs: 3, congestionWindow: 4, receiverWindow: 5, mtu: 1228 })) };
+		}
+		return { header: {}, payload: Buffer.alloc(0) };
+	};
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-race' });
+
+	// Kick off getSctpStats before pc.create resolves.
+	const statsPromise = pc.getSctpStats();
+
+	// Drain microtasks deterministically — no wall-clock wait — and confirm
+	// that with pc.create still pending, getSctpStats has not yet dispatched.
+	for (let i = 0; i < 10; i++) await Promise.resolve();
+	assert.equal(ipc.requests.length, 1);
+	assert.equal(ipc.requests[0].method, 'pc.create');
+
+	// Unblock pc.create; getSctpStats should now dispatch and resolve.
+	createResolve();
+	const stats = await statsPromise;
+	assert.equal(stats.mtu, 1228);
+	assert.equal(ipc.requests[1].method, 'pc.getSctpStats');
+});
+
+test('getSctpStats rejects when pc.create has failed', async () => {
+	const ipc = new EventEmitter();
+	ipc.request = async (method) => {
+		if (method === 'pc.create') throw new Error('boom');
+		throw new Error('should not reach other methods when pc.create failed');
+	};
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-fail' });
+	await assert.rejects(() => pc.getSctpStats(), /boom/);
+});
+
+test('getSctpStats treats an empty-buffer response as null (defensive)', async () => {
+	// Normal path: Go always returns msgpack nil (0xc0, 1 byte) for nil stats.
+	// If an IPC-layer bug ever produced a zero-length payload, the decoder
+	// would otherwise throw a bare RangeError. Verify the guard returns null.
+	const ipc = createMockIpc({
+		'pc.getSctpStats': () => Buffer.alloc(0),
+	});
+	const pc = new RTCPeerConnection({ _ipc: ipc, _pcId: 'pc-empty' });
+	const stats = await pc.getSctpStats();
+	assert.equal(stats, null);
 });
