@@ -117,8 +117,14 @@ Optional per-PeerConnection configuration, forwarded to the Go side at `pc.creat
 | `iceFailedTimeout` | number (ms) | `SetICETimeouts` (arg 2) | 25000 |
 | `iceKeepAliveInterval` | number (ms) | `SetICETimeouts` (arg 3) | 2000 |
 | `stunGatherTimeout` | number (ms) | `SetSTUNGatherTimeout` | 5000 |
+| `interfaceFilter` | object | `SetInterfaceFilter` | no filter |
+| `ipFilter` | object | `SetIPFilter` | no filter |
 
 The three ICE timeout fields share a single pion setter. If the caller specifies any of them, the unspecified fields fall back to the pion defaults listed above.
+
+`interfaceFilter` shape: `{ denyPrefixes?: string[], allowPrefixes?: string[] }`. Case-sensitive `HasPrefix` matching on the interface name. Empty lists (or empty object) install no filter. Allow narrows the candidate set; deny wins on overlap. An empty-string entry is rejected up front (would match every interface).
+
+`ipFilter` shape: `{ denyCIDRs?: string[], allowCIDRs?: string[] }`. CIDRs accept IPv4 and IPv6 (`net.ParseCIDR` semantics); invalid strings fail `pc.create`. Same allow / deny semantics as `interfaceFilter`.
 
 ```js
 const pc = new RTCPeerConnection({
@@ -127,6 +133,8 @@ const pc = new RTCPeerConnection({
   settings: {
     sctpRtoMax: 10000,   // shorten worst-case SCTP backoff after long idle
     iceFailedTimeout: 15000,
+    interfaceFilter: { denyPrefixes: ['docker', 'br-', 'veth'] },
+    ipFilter: { denyCIDRs: ['172.16.0.0/12'] },
   },
 });
 ```
