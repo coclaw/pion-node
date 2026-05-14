@@ -31,6 +31,14 @@ class RTCPeerConnection extends EventEmitter {
 	 *     - `iceFailedTimeout` (number, ms): `SetICETimeouts` arg 2. Default 25000.
 	 *     - `iceKeepAliveInterval` (number, ms): `SetICETimeouts` arg 3. Default 2000.
 	 *     - `stunGatherTimeout` (number, ms): `SetSTUNGatherTimeout`. Default 5000.
+	 *     - `interfaceFilter` (object): ICE-candidate filter by interface name.
+	 *       Shape: `{ denyPrefixes?: string[], allowPrefixes?: string[] }`. Case-sensitive
+	 *       `HasPrefix` matching. Empty lists / empty object = no filter (pion default).
+	 *       When both are non-empty, allow narrows the set and deny wins on overlap.
+	 *     - `ipFilter` (object): ICE-candidate filter by IP CIDR.
+	 *       Shape: `{ denyCIDRs?: string[], allowCIDRs?: string[] }`. CIDRs accept IPv4 and
+	 *       IPv6; an invalid CIDR string fails `pc.create` up front. Same allow/deny
+	 *       semantics as `interfaceFilter`.
 	 *   If any of the three ICE timeout fields is provided, the other two fall back to pion
 	 *   defaults (pion's `SetICETimeouts` sets all three together).
 	 * @param {import('./pion-ipc.js').PionIpc} [config._ipc] - PionIpc instance (pion-node extension)

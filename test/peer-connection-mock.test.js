@@ -1032,6 +1032,32 @@ test('constructor omits settings field when not provided', async () => {
 	assert.ok(!('settings' in payload), 'settings key should be absent when undefined');
 });
 
+test('constructor forwards interfaceFilter and ipFilter rules verbatim', async () => {
+	// Filter rules are pass-through to Go (which owns validation / CIDR parsing).
+	// pion-node only proves it does not drop or mangle the new fields.
+	const ipc = createMockIpc();
+	const settings = {
+		interfaceFilter: {
+			denyPrefixes: ['docker', 'br-'],
+			allowPrefixes: ['eth', 'wlp'],
+		},
+		ipFilter: {
+			denyCIDRs: ['172.16.0.0/12', 'fe80::/10'],
+		},
+	};
+	const pc = new RTCPeerConnection({
+		iceServers: [],
+		settings,
+		_ipc: ipc,
+		_pcId: 'pc-filter',
+	});
+
+	await pc._ready;
+
+	const payload = ipc.requests[0].payload;
+	assert.deepEqual(payload.settings, settings);
+});
+
 test('constructor forwards empty settings object verbatim', async () => {
 	const ipc = createMockIpc();
 	const pc = new RTCPeerConnection({
